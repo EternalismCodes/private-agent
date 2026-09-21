@@ -7,6 +7,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: private-agent-main
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,4 +43,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: private-agent-release
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: private-agent-main/build/app/outputs/flutter-apk/app-release.apk
