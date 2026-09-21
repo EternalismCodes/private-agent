@@ -148,8 +148,8 @@ class _AgentSettingsScreenState extends State<AgentSettingsScreen> {
           ),
           const SectionLabel('Reliability'),
           _switch(
-            'Verify each step',
-            'After every on-screen step, check the screen against what was expected. Uses one extra model call per step.',
+            'Double-check each step (slower)',
+            'After every on-screen step, ask the model to compare the screen with what was expected. Adds one model call per step. Off by default: failed steps are detected and recovered anyway.',
             _prefs.verifySteps,
             (v) => _prefs.verifySteps = v,
           ),

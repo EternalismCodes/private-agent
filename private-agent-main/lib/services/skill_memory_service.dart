@@ -72,23 +72,38 @@ class SkillMemoryService {
       }
     }
 
-    if (highestSim > 0.6) {
+    // Exact-ish matches only: a replay repeats literal taps and typed text.
+    if (highestSim >= 0.85) {
       return bestMatch;
     }
     return null;
   }
 
-  Future<void> saveSkill(String taskGoal, List<ActionStep> steps) async {
+  Future<void> saveSkill(
+    String taskGoal,
+    List<ActionStep> steps, {
+    String finalPkg = '',
+    List<String> finalSig = const [],
+  }) async {
     await _loadSkills();
-    
+    if (steps.isEmpty) return;
+
     final queryKeywords = _extractKeywords(taskGoal);
     for (final skill in _skills) {
       if (_jaccardSimilarity(queryKeywords, skill.taskKeywords) > 0.8) {
         skill.successCount++;
         skill.lastUsed = DateTime.now();
-        if (steps.length < skill.steps.length) {
+        final oldExact = skill.steps.any((s) => s.meta.isNotEmpty);
+        final newExact = steps.any((s) => s.meta.isNotEmpty);
+        final replace = skill.failCount > 0 ||
+            (newExact && !oldExact) ||
+            (newExact == oldExact && steps.length < skill.steps.length);
+        if (replace) {
           skill.steps.clear();
           skill.steps.addAll(steps);
+          skill.failCount = 0;
+          skill.finalPkg = finalPkg;
+          skill.finalSig = List<String>.from(finalSig);
         }
         await _saveAllSkills();
         return;
@@ -103,6 +118,8 @@ class SkillMemoryService {
       failCount: 0,
       lastUsed: DateTime.now(),
       steps: steps,
+      finalPkg: finalPkg,
+      finalSig: List<String>.from(finalSig),
     );
     _skills.add(newSkill);
     await _saveAllSkills();
@@ -130,6 +147,17 @@ class SkillMemoryService {
     _skills = [];
     _isLoaded = true;
     await _saveAllSkills();
+  }
+
+  Future<void> recordReplay(String skillId, int millis) async {
+    await _loadSkills();
+    final index = _skills.indexWhere((s) => s.id == skillId);
+    if (index != -1) {
+      _skills[index].replayCount++;
+      _skills[index].lastReplayMs = millis;
+      _skills[index].lastUsed = DateTime.now();
+      await _saveAllSkills();
+    }
   }
 
   Future<void> recordFailure(String skillId) async {

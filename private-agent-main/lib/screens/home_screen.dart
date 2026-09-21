@@ -72,6 +72,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _telegramService = TelegramService(_actionHandler, _aiService);
     _agentContext = AgentContext(ai: _aiService, actions: _actionHandler);
     _controller = AgentController(_agentContext);
+    _startScheduler();
     _initServices();
     _startOverlayHistorySync();
     // Register as the handler for overlay bubble tasks
@@ -86,7 +87,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _actionHandler.shizuku.checkAvailability();
     await _agentContext.ensureLoaded();
     _mode = _agentContext.prefs.defaultMode;
-    _startScheduler();
 
     if (mounted) {
       setState(() {});
@@ -112,13 +112,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       _isLoading = true;
     });
     _scrollToBottom();
+
     var status = 'Success';
+    var reply = '';
+    // Each schedule may use its own model; it applies to this run only.
+    _aiService.modelOverride = task.model.trim().isEmpty ? null : task.model.trim();
     try {
-      final result = await _controller.handle(task.goal, AgentMode.auto, _ui);
+      final result = await _controller.handle(
+        task.goal,
+        task.agentMode == AgentMode.planExecute ? AgentMode.planExecute : AgentMode.auto,
+        _ui,
+        unattended: !task.askFirst,
+      );
       status = result.success ? 'Success' : 'Failed';
-    } catch (_) {
+      reply = result.reply;
+    } catch (e) {
       status = 'Failed';
+      reply = e.toString().replaceFirst('Exception: ', '');
     } finally {
+      _aiService.modelOverride = null;
       await _saveSession();
       if (mounted) {
         setState(() {
@@ -127,6 +139,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         });
       }
     }
+
+    // The user is probably not looking at the screen: report the outcome.
+    try {
+      final goal = task.goal.length > 40 ? '${task.goal.substring(0, 40)}…' : task.goal;
+      final body = reply.isEmpty ? status : (reply.length > 180 ? '${reply.substring(0, 180)}…' : reply);
+      await _notificationService.showTaskCompleteNotification(
+        status == 'Success' ? 'Scheduled: $goal' : 'Scheduled task failed: $goal',
+        body,
+      );
+    } catch (_) {}
     return status;
   }
 
@@ -355,11 +377,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         builder: (_) => CallScreen(
           controller: _controller,
           voice: _voiceService,
-          bringToFront: () async {
-            try {
-              await _actionHandler.appLauncher.openPackage('com.orailnoor.privateagent');
-            } catch (_) {}
-          },
         ),
       ),
     );
@@ -1133,6 +1150,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             Navigator.pop(context);
             _openAgentScreen(
               SchedulesScreen(
+                aiService: _aiService,
                 onRunNow: (goal) async {
                   if (!mounted) return;
                   setState(() => _mode = AgentMode.auto);

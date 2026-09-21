@@ -52,6 +52,10 @@ class AiService {
   String? _apiKey;
   String _baseUrl = _defaultBaseUrl;
   String _model = _defaultModel;
+
+  /// Temporarily replaces the configured model (used by scheduled tasks that
+  /// pick their own model). Null means "use the model from Settings".
+  String? modelOverride;
   int _maxSteps = 15;
   bool _disableMaxSteps = false;
   double _temperature = 1.0;
@@ -203,7 +207,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
 
   bool get isConfigured => _apiKey != null && _apiKey!.isNotEmpty;
   String get baseUrl => _baseUrl;
-  String get model => _model;
+  String get model => (modelOverride != null && modelOverride!.trim().isNotEmpty) ? modelOverride!.trim() : _model;
   String get apiKey => _apiKey ?? '';
   int get maxSteps => _disableMaxSteps ? 999 : _maxSteps;
   int get rawMaxSteps => _maxSteps; // For the slider UI
@@ -217,7 +221,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
     // GLM is a reasoning model. With the app's 1,024-token default it can
     // consume the whole budget reasoning and finish without visible content.
     if (isNvidiaBaseUrl(_baseUrl) &&
-        _model == nvidiaDefaultModel &&
+        model == nvidiaDefaultModel &&
         _maxTokens < 4096) {
       return 4096;
     }
@@ -269,7 +273,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
       }
 
       final requestBody = jsonEncode({
-        'model': _model,
+        'model': model,
         'messages': messages,
         'temperature': _temperature,
         'max_tokens': _effectiveMaxTokens,
@@ -390,7 +394,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
       });
 
       request.body = jsonEncode({
-        'model': _model,
+        'model': model,
         'messages': messages,
         'temperature': _temperature,
         'max_tokens': _effectiveMaxTokens,
@@ -532,7 +536,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
                 'X-Title': 'PrivateAgent',
               },
               body: jsonEncode({
-                'model': _model,
+                'model': model,
                 'messages': messages,
                 'temperature': _temperature,
                 'max_tokens': _effectiveMaxTokens,

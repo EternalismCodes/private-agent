@@ -24,6 +24,14 @@ class ScheduledTask {
   DateTime? lastRun;
   String lastStatus;
 
+  /// Model to use for this task only (empty = the model from Settings).
+  String model;
+
+  /// Ask before sensitive steps (send, call, pay...). Off by default: a
+  /// scheduled task runs unattended, so waiting for an answer would just make
+  /// it fail.
+  bool askFirst;
+
   ScheduledTask({
     required this.id,
     required this.goal,
@@ -34,6 +42,8 @@ class ScheduledTask {
     this.enabled = true,
     this.lastRun,
     this.lastStatus = '',
+    this.model = '',
+    this.askFirst = false,
   });
 
   AgentMode get agentMode => AgentModeInfo.fromId(mode);
@@ -81,6 +91,8 @@ class ScheduledTask {
         'enabled': enabled,
         'last_run': lastRun?.toIso8601String(),
         'last_status': lastStatus,
+        'model': model,
+        'ask_first': askFirst,
       };
 
   factory ScheduledTask.fromJson(Map<String, dynamic> json) => ScheduledTask(
@@ -93,6 +105,8 @@ class ScheduledTask {
         enabled: JsonUtils.boolOf(json['enabled'], true),
         lastRun: DateTime.tryParse(JsonUtils.str(json['last_run'])),
         lastStatus: JsonUtils.str(json['last_status']),
+        model: JsonUtils.str(json['model']),
+        askFirst: JsonUtils.boolOf(json['ask_first'], false),
       );
 }
 
@@ -166,6 +180,12 @@ class SchedulerService {
     }
   }
 
+  Future<void> _nativeDismiss(String id) async {
+    try {
+      await _channel.invokeMethod('dismiss', {'id': id});
+    } catch (_) {}
+  }
+
   Future<bool> canScheduleExact() async {
     try {
       return await _channel.invokeMethod<bool>('canScheduleExact') ?? true;
@@ -195,6 +215,8 @@ class SchedulerService {
     required DateTime when,
     String repeat = 'none',
     String mode = 'auto',
+    String model = '',
+    bool askFirst = false,
   }) async {
     await load();
     final task = ScheduledTask(
@@ -203,6 +225,8 @@ class SchedulerService {
       mode: mode,
       repeat: repeat,
       anchor: when,
+      model: model.trim(),
+      askFirst: askFirst,
     );
     task.nextRun = task.computeNextRun(DateTime.now());
     if (task.nextRun == null) task.enabled = false;
@@ -250,7 +274,7 @@ class SchedulerService {
     required Future<String> Function(ScheduledTask task) runner,
   }) {
     _ticker?.cancel();
-    _ticker = Timer.periodic(const Duration(seconds: 20), (_) {
+    _ticker = Timer.periodic(const Duration(seconds: 8), (_) {
       checkDue(canRun: canRun, runner: runner);
     });
     checkDue(canRun: canRun, runner: runner);
@@ -282,6 +306,9 @@ class SchedulerService {
           continue;
         }
         if (!canRun()) return;
+
+        // The wake-up notification is not needed once the task is running.
+        await _nativeDismiss(t.id);
 
         // Move the schedule forward first so a crash cannot re-trigger it.
         t.lastRun = now;

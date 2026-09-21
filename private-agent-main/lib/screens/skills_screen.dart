@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import '../agent/plan_cache.dart';
 import '../agent/skills_service.dart';
 import '../models/saved_skill.dart';
 import '../services/skill_memory_service.dart';
@@ -19,6 +20,7 @@ class _SkillsScreenState extends State<SkillsScreen> {
   final SkillMemoryService _workflows = SkillMemoryService();
   List<AgentSkill> _items = [];
   List<SavedSkill> _learned = [];
+  List<CachedRoutine> _routines = [];
   bool _loading = true;
 
   @override
@@ -30,10 +32,12 @@ class _SkillsScreenState extends State<SkillsScreen> {
   Future<void> _reload() async {
     await _skills.load(force: true);
     final learned = await _workflows.listAll();
+    final routines = await PlanCache.instance.list();
     if (!mounted) return;
     setState(() {
       _items = List<AgentSkill>.from(_skills.items);
       _learned = learned;
+      _routines = routines;
       _loading = false;
     });
   }
@@ -168,7 +172,7 @@ class _SkillsScreenState extends State<SkillsScreen> {
                           padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
                           children: [for (final s in _items) _skillTile(s, scheme)],
                         ),
-                  _learned.isEmpty
+                  (_learned.isEmpty && _routines.isEmpty)
                       ? const EmptyState(
                           icon: Icons.auto_fix_high_outlined,
                           title: 'Nothing learned yet',
@@ -177,7 +181,16 @@ class _SkillsScreenState extends State<SkillsScreen> {
                         )
                       : ListView(
                           padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
-                          children: [for (final w in _learned) _workflowTile(w, scheme)],
+                          children: [
+                            if (_routines.isNotEmpty) ...[
+                              const SectionLabel('Saved routines (run without asking the model)'),
+                              for (final r in _routines) _routineTile(r),
+                            ],
+                            if (_learned.isNotEmpty) ...[
+                              const SectionLabel('Recorded screen workflows'),
+                              for (final w in _learned) _workflowTile(w, scheme),
+                            ],
+                          ],
                         ),
                 ],
               ),
@@ -252,13 +265,35 @@ class _SkillsScreenState extends State<SkillsScreen> {
         child: Text(text, style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600)),
       );
 
+  Widget _routineTile(CachedRoutine r) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 5),
+      child: ListTile(
+        leading: const Icon(Icons.bolt_rounded),
+        title: Text(r.goal, maxLines: 2, overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+        subtitle: Text(
+          '${r.steps.length} steps · ${r.successCount} successes · ${r.failCount} failures',
+          style: const TextStyle(fontSize: 12),
+        ),
+        trailing: IconButton(
+          icon: const Icon(Icons.delete_outline_rounded),
+          onPressed: () async {
+            await PlanCache.instance.delete(r.key);
+            await _reload();
+          },
+        ),
+      ),
+    );
+  }
+
   Widget _workflowTile(SavedSkill w, ColorScheme scheme) {
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 5),
       child: ListTile(
         title: Text(w.task, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
         subtitle: Text(
-          '${w.steps.length} steps · ${w.successCount} successes · ${w.failCount} failures\nLast used ${DateFormat('MMM d, HH:mm').format(w.lastUsed)}',
+          '${w.steps.length} steps · ${w.successCount} successes · ${w.failCount} failures\n${w.isExact ? 'Exact replay: ${w.replayCount} runs${w.lastReplayMs > 0 ? ', last took ${(w.lastReplayMs / 1000).toStringAsFixed(1)}s' : ''}' : 'Older recording (timed replay)'}\nLast used ${DateFormat('MMM d, HH:mm').format(w.lastUsed)}',
           style: const TextStyle(fontSize: 12, height: 1.4),
         ),
         isThreeLine: true,

@@ -18,7 +18,10 @@
         tools:node="remove" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- Scheduled tasks -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- For speech recognition -->
@@ -71,6 +74,12 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- Keeps the microphone alive during a voice call while another app is open -->
+        <service
+            android:name=".CallService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
         <!-- Wake-up alarms for scheduled tasks -->
         <receiver android:name=".ScheduleReceiver" android:exported="false" />

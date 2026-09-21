@@ -13,7 +13,7 @@ class Planner {
   static const String _planSystem = '''
 You are the planning module of PrivateAgent, an autonomous assistant that operates an Android phone through the Accessibility service (it can read the screen, tap, type, scroll, go back and open apps).
 
-Break the user's GOAL into a short ordered plan of 1-8 steps. Prefer few, coarse steps: one "ui" step may cover a whole sub-task inside one app (the screen agent works out the taps itself).
+Break the user's GOAL into a short ordered plan of 1-6 steps. Use as FEW steps as possible. A "ui" step is a complete sub-task inside one app that ends with a visible result, for example "In YouTube, search for cat videos and open the first result". NEVER make a step for a single tap, click or keystroke (such as "click the search button" or "type cat videos"): the screen agent works out every tap by itself, and tiny steps make it slow and confused.
 
 Each step is an object:
 - "title": one imperative sentence saying what to do, including every detail needed (names, text to type, app names).

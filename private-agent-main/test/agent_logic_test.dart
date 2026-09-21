@@ -168,6 +168,26 @@ void main() {
       expect(t.computeNextRun(DateTime(2026, 9, 21, 9, 0)), isNull);
     });
 
+    test('keeps its own model and confirmation setting', () {
+      final t = ScheduledTask(
+        id: '1',
+        goal: 'g',
+        anchor: DateTime(2026, 9, 21, 8),
+        model: 'gpt-4o-mini',
+        askFirst: true,
+      );
+      final copy = ScheduledTask.fromJson(t.toJson());
+      expect(copy.model, 'gpt-4o-mini');
+      expect(copy.askFirst, isTrue);
+      final old = ScheduledTask.fromJson({
+        'id': '2',
+        'goal': 'g',
+        'anchor': '2026-09-21T08:00:00.000',
+      });
+      expect(old.model, '');
+      expect(old.askFirst, isFalse);
+    });
+
     test('parses the time format the model uses', () {
       expect(SchedulerService.parseWhen('2026-09-22 09:15'), DateTime(2026, 9, 22, 9, 15));
       expect(SchedulerService.parseWhen('not a date'), isNull);

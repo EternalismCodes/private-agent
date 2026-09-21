@@ -33,7 +33,7 @@ dependencies:
   path_provider: ^2.1.0
 
   # Encrypted credential storage (Android Keystore backed)
-  flutter_secure_storage: ^11.2.0
+  flutter_secure_storage: ^9.2.4
 
   # Notifications
   flutter_local_notifications: ^18.0.0

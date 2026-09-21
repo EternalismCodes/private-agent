@@ -9,6 +9,7 @@ import 'agent_mode.dart';
 import 'json_utils.dart';
 import 'memory_service.dart';
 import 'plan.dart';
+import 'plan_cache.dart';
 import 'plan_runner.dart';
 import 'planner.dart';
 import 'scheduler_service.dart';
@@ -28,12 +29,17 @@ class AgentUi {
   /// Short progress lines while the phone is being operated.
   final void Function(String message) onProgress;
 
+  /// Voice calls only: receives finished sentences while the reply is still
+  /// streaming, so speech can start before the model has finished writing.
+  final void Function(String text)? speak;
+
   const AgentUi({
     required this.addMessage,
     required this.refresh,
     required this.removeMessage,
     required this.confirmStep,
     required this.onProgress,
+    this.speak,
   });
 }
 
@@ -45,11 +51,19 @@ class AgentTurnResult {
   /// Whether the reply is worth reading aloud.
   final bool speak;
 
+  /// The user is done: the voice call should end after the reply is spoken.
+  final bool endCall;
+
+  /// The reply was already spoken sentence by sentence while it streamed.
+  final bool spoken;
+
   const AgentTurnResult({
     required this.reply,
     this.usedDevice = false,
     this.success = true,
     this.speak = false,
+    this.endCall = false,
+    this.spoken = false,
   });
 }
 
@@ -64,6 +78,9 @@ class AgentController {
   PlanRunner? _runner;
   bool _busy = false;
   bool _cancelled = false;
+  bool _voiceCall = false;
+  bool _unattended = false;
+  bool _spokeThisTurn = false;
 
   bool get busy => _busy;
 
@@ -93,7 +110,13 @@ class AgentController {
 
   // ─── Entry points ──────────────────────────────────────────────────────
 
-  Future<AgentTurnResult> handle(String rawText, AgentMode mode, AgentUi ui) async {
+  Future<AgentTurnResult> handle(
+    String rawText,
+    AgentMode mode,
+    AgentUi ui, {
+    bool voice = false,
+    bool unattended = false,
+  }) async {
     final text = rawText.trim();
     if (text.isEmpty) return const AgentTurnResult(reply: '');
     if (_busy) {
@@ -101,8 +124,26 @@ class AgentController {
     }
     _busy = true;
     _cancelled = false;
+    _voiceCall = voice;
+    _unattended = unattended;
+    _spokeThisTurn = false;
     try {
       await ctx.ensureLoaded();
+
+      // "open <app>" needs no model at all.
+      if (mode == AgentMode.auto || mode == AgentMode.planExecute) {
+        final local = await _tryLocalIntent(text, ui);
+        if (local != null) return local;
+      }
+
+      // A request that already worked once is repeated without asking the
+      // model what to do: the saved steps run straight away.
+      if (mode == AgentMode.auto || mode == AgentMode.planExecute) {
+        final cached = await PlanCache.instance.find(text);
+        if (cached != null) {
+          return await _runCached(cached, text, mode, ui);
+        }
+      }
 
       // "Remember that ..." is handled locally, in every mode.
       final explicit = MemoryService.explicitFact(text);
@@ -122,8 +163,17 @@ class AgentController {
         case AgentMode.think:
           return await _converse(text, ui, think: true);
         case AgentMode.plan:
-        case AgentMode.planExecute:
           return await _propose(text, mode, ui);
+        case AgentMode.planExecute:
+          // Plan & Execute never waits for approval: plan, then run.
+          return await _planAndExecute(
+            text,
+            '',
+            ui,
+            mode: 'planExecute',
+            askConfirmation: false,
+            cacheKey: text,
+          );
         case AgentMode.auto:
           return await _auto(text, ui);
       }
@@ -149,7 +199,13 @@ class AgentController {
     _cancelled = false;
     try {
       await ctx.ensureLoaded();
-      return await _runPlan(plan, ui, historyMode: plan.mode, askConfirmation: false);
+      return await _runPlan(
+        plan,
+        ui,
+        historyMode: plan.mode,
+        askConfirmation: false,
+        cacheKey: plan.goal,
+      );
     } catch (e) {
       final text = 'Error: ${e.toString().replaceFirst('Exception: ', '')}';
       plan.state = PlanState.failed;
@@ -226,9 +282,11 @@ Then, after the closing tag, write the final answer: clear, well organised and a
     bool hideJson = false,
     double? temperature,
     int? maxTokens,
+    void Function(String sentence)? onSentence,
   }) async {
     var raw = '';
     var sideReasoning = '';
+    var spokenChars = 0;
     final stream = ctx.llm
         .stream(messages, temperature: temperature, maxTokens: maxTokens)
         .timeout(
@@ -249,6 +307,17 @@ Then, after the closing tag, write the final answer: clear, well organised and a
         message.content = 'Working on it…';
       } else {
         message.content = answer;
+        if (onSentence != null && answer.trim().isNotEmpty) {
+          final end = _sentenceEnd(answer, spokenChars);
+          if (end > spokenChars) {
+            final chunk = answer.substring(spokenChars, end).trim();
+            spokenChars = end;
+            if (chunk.isNotEmpty) {
+              _spokeThisTurn = true;
+              onSentence(chunk);
+            }
+          }
+        }
       }
       if (keepReasoning) {
         final parts = [sideReasoning.trim(), split.reasoning.trim()].where((p) => p.isNotEmpty);
@@ -258,7 +327,25 @@ Then, after the closing tag, write the final answer: clear, well organised and a
       ui.refresh();
     }
     message.thinking = false;
-    return ThinkParser.split(raw).answer;
+    final finalAnswer = ThinkParser.split(raw).answer;
+    if (onSentence != null && !_cancelled && !_looksLikeAction(finalAnswer) && finalAnswer.length > spokenChars) {
+      final tail = finalAnswer.substring(spokenChars).trim();
+      if (tail.isNotEmpty) {
+        _spokeThisTurn = true;
+        onSentence(tail);
+      }
+    }
+    return finalAnswer;
+  }
+
+  /// End index of the last complete sentence in [text] after [from], or -1.
+  static int _sentenceEnd(String text, int from) {
+    if (from >= text.length) return -1;
+    var last = -1;
+    for (final m in RegExp(r'[.!?…]+["”)]?\s|\n').allMatches(text, from)) {
+      last = m.end;
+    }
+    return last;
   }
 
   static bool _looksLikeAction(String answer) {
@@ -281,9 +368,8 @@ Then, after the closing tag, write the final answer: clear, well organised and a
       return const AgentTurnResult(reply: 'Stopped.', success: false);
     }
     message.plan = plan;
-    message.content = mode == AgentMode.plan
-        ? 'Here is the plan. Nothing has been done yet: run it whenever you like.'
-        : 'Here is my plan. Review or edit it, then tap **Approve & run**.';
+    message.content =
+        'Here is the plan. Nothing has been done yet: edit it if you like and tap **Run this plan** when ready.';
     ui.refresh();
     final summary = plan.summary.isEmpty ? plan.goal : plan.summary;
     _history.add({'role': 'assistant', 'content': 'I proposed a plan: $summary'});
@@ -296,12 +382,14 @@ Then, after the closing tag, write the final answer: clear, well organised and a
     AgentUi ui, {
     required String historyMode,
     required bool askConfirmation,
+    String? cacheKey,
+    bool fromCache = false,
   }) async {
     final runner = PlanRunner(
       ctx: ctx,
       onChanged: ui.refresh,
       onProgress: ui.onProgress,
-      confirmStep: (askConfirmation && ctx.prefs.confirmSensitive) ? ui.confirmStep : null,
+      confirmStep: (askConfirmation && !_unattended && ctx.prefs.confirmSensitive) ? ui.confirmStep : null,
     );
     _runner = runner;
     PlanRunResult result;
@@ -311,6 +399,14 @@ Then, after the closing tag, write the final answer: clear, well organised and a
       _runner = null;
     }
     ui.refresh();
+
+    if (cacheKey != null) {
+      if (result.success) {
+        await PlanCache.instance.remember(cacheKey, plan);
+      } else if (fromCache && !result.cancelled) {
+        await PlanCache.instance.recordResult(cacheKey, success: false);
+      }
+    }
 
     final reply = result.reply;
     ui.addMessage(
@@ -369,12 +465,20 @@ MEMORY AND AUTOMATION:
 
 RULES:
 - If a request has several steps ("open X and do Y"), use execute_task or plan_and_execute, never open_app.
+- Prefer execute_task (one app, one flow) and use plan_and_execute only when the job truly spans several different apps. Both are slower when they are used unnecessarily.
 - Ask a short clarifying question in plain text instead of guessing when a required detail (who, what, when) is missing.
 - Do not claim you did something unless you used an action.''';
 
+  static const String _voiceAddendum = '''
+\nVOICE CALL: the user is talking to you on a hands-free voice call and hears your replies. Answer in one or two short spoken sentences: no markdown, lists, emojis or links. When the user says goodbye or signals they are finished (bye, that's all, hang up, talk later, thanks that's it), reply with ONLY {"action": "end_call", "params": {}, "response": "a short goodbye"}. Never end the call otherwise.''';
+
+  static const String _unattendedAddendum = '''
+\nSCHEDULED TASK: this request comes from a schedule and runs unattended, nobody is there to answer questions. Do it now with an action (execute_task or plan_and_execute for anything on the phone). Do not ask for confirmation. If it is an information request, use an action to read the answer from the phone or reply directly.''';
+
   Future<AgentTurnResult> _auto(String text, AgentUi ui) async {
     final context = await ctx.contextBlock(text, includeSkillCatalog: true);
-    final system = '$_autoPrompt\n\n$context';
+    final system =
+        '$_autoPrompt${_voiceCall ? _voiceAddendum : ''}${_unattended ? _unattendedAddendum : ''}\n\n$context';
 
     _history.add({'role': 'user', 'content': text});
     _trimHistory();
@@ -388,6 +492,7 @@ RULES:
       message,
       ui,
       hideJson: true,
+      onSentence: (_voiceCall && ui.speak != null) ? ui.speak : null,
     );
 
     if (_cancelled) {
@@ -405,7 +510,7 @@ RULES:
       _history.add({'role': 'assistant', 'content': answer});
       _trimHistory();
       _learn(text, answer);
-      return AgentTurnResult(reply: answer, speak: true);
+      return AgentTurnResult(reply: answer, speak: true, spoken: _spokeThisTurn);
     }
 
     ui.removeMessage(message);
@@ -422,16 +527,27 @@ RULES:
   Future<AgentTurnResult> _dispatch(AgentAction action, String userText, AgentUi ui) async {
     final params = action.params;
     switch (action.action) {
+      case 'end_call':
+        {
+          if (!_voiceCall) return _reply(ui, action.response.isEmpty ? 'Okay.' : action.response);
+          final bye = action.response.isEmpty ? 'Goodbye!' : action.response;
+          return AgentTurnResult(reply: bye, speak: true, endCall: true);
+        }
       case 'execute_task':
         {
           final goal = JsonUtils.str(params['goal'], userText);
           _say(ui, action.response);
-          return _runPlanOnDevice(Plan.single(goal, mode: 'auto'), ui, askConfirmation: false);
+          return _runPlanOnDevice(
+            Plan.single(goal, mode: 'auto'),
+            ui,
+            askConfirmation: false,
+            cacheKey: userText,
+          );
         }
       case 'plan_and_execute':
         {
           final goal = JsonUtils.str(params['goal'], userText);
-          return _planAndExecute(goal, action.response, ui);
+          return _planAndExecute(goal, action.response, ui, cacheKey: userText);
         }
       case 'run_skill':
         {
@@ -441,20 +557,64 @@ RULES:
           }
           await ctx.skills.recordUse(skill.id);
           final goal = JsonUtils.str(params['goal'], userText);
-          return _planAndExecute('$goal (use the skill "${skill.name}")', action.response, ui);
+          return _planAndExecute(
+            '$goal (use the skill "${skill.name}")',
+            action.response,
+            ui,
+            cacheKey: userText,
+          );
         }
       case 'remember':
         return _remember(action, ui);
       case 'schedule_task':
         return _schedule(action, userText, ui);
       default:
-        return _directAction(action, ui);
+        return _directAction(action, ui, userText);
     }
   }
 
   void _say(AgentUi ui, String text) {
     if (text.trim().isEmpty) return;
     ui.addMessage(ChatMessage(role: 'assistant', content: text.trim(), mode: AgentMode.auto.id));
+    if (_voiceCall) ui.speak?.call(text.trim());
+  }
+
+  static final RegExp _openIntent = RegExp(
+    r"^\s*(?:please\s+)?(?:open|launch|start)\s+(?:the\s+)?(.{2,30}?)(?:\s+app)?\s*[.!]?\s*$",
+    caseSensitive: false,
+  );
+  static final RegExp _compound = RegExp(
+    r'\b(and|then|in|on|to|for|with|from|at|inside|search|play|send|message|call)\b',
+    caseSensitive: false,
+  );
+
+  /// "open Instagram": opens the app straight away, no model call.
+  Future<AgentTurnResult?> _tryLocalIntent(String text, AgentUi ui) async {
+    final m = _openIntent.firstMatch(text);
+    if (m == null) return null;
+    final name = (m.group(1) ?? '').trim();
+    if (name.isEmpty || _compound.hasMatch(name)) return null;
+
+    final action = AgentAction(
+      action: 'open_app',
+      params: {'app_name': name},
+      response: 'Opening $name.',
+    );
+    final result = await ctx.actions.execute(action, aiService: ctx.ai, onProgress: ui.onProgress);
+    final details = (result.details ?? '').trim();
+    final failed = !result.success ||
+        RegExp(r'^(error|could not|cannot|can.t|no app|not found|failed|unable)', caseSensitive: false)
+            .hasMatch(details);
+    if (failed) return null; // let the model work it out
+
+    final reply = 'Opening $name.';
+    _history.add({'role': 'user', 'content': text});
+    _history.add({'role': 'assistant', 'content': reply});
+    _trimHistory();
+    ui.addMessage(
+      ChatMessage(role: 'assistant', content: reply, actionResult: result, mode: AgentMode.auto.id),
+    );
+    return AgentTurnResult(reply: reply, usedDevice: true, speak: true);
   }
 
   AgentTurnResult _reply(AgentUi ui, String text, {bool success = true}) {
@@ -462,31 +622,88 @@ RULES:
     return AgentTurnResult(reply: text, success: success, speak: true);
   }
 
-  Future<AgentTurnResult> _planAndExecute(String goal, String announcement, AgentUi ui) async {
+  Future<AgentTurnResult> _planAndExecute(
+    String goal,
+    String announcement,
+    AgentUi ui, {
+    String mode = 'auto',
+    bool askConfirmation = true,
+    String? cacheKey,
+  }) async {
     _say(ui, announcement);
-    final plan = await Planner(ctx).createPlan(goal, mode: 'auto');
+    if (mode == 'planExecute') {
+      _history.add({'role': 'user', 'content': goal});
+      _trimHistory();
+    }
+    final plan = await Planner(ctx).createPlan(goal, mode: mode);
     if (_cancelled) return const AgentTurnResult(reply: 'Stopped.', success: false);
-    return _runPlanOnDevice(plan, ui, askConfirmation: true);
+    return _runPlanOnDevice(
+      plan,
+      ui,
+      askConfirmation: askConfirmation,
+      mode: mode,
+      cacheKey: cacheKey,
+    );
   }
 
   Future<AgentTurnResult> _runPlanOnDevice(
     Plan plan,
     AgentUi ui, {
     required bool askConfirmation,
+    String mode = 'auto',
+    String? cacheKey,
+    bool fromCache = false,
   }) {
     plan.state = PlanState.running;
     ui.addMessage(
       ChatMessage(
         role: 'assistant',
-        content: plan.steps.length > 1 ? 'Working through ${plan.steps.length} steps…' : 'Working on it…',
+        content: fromCache
+            ? 'Running a saved routine…'
+            : (plan.steps.length > 1 ? 'Working through ${plan.steps.length} steps…' : 'Working on it…'),
         plan: plan,
-        mode: AgentMode.auto.id,
+        mode: mode,
       ),
     );
-    return _runPlan(plan, ui, historyMode: 'auto', askConfirmation: askConfirmation);
+    return _runPlan(
+      plan,
+      ui,
+      historyMode: mode,
+      askConfirmation: askConfirmation,
+      cacheKey: cacheKey,
+      fromCache: fromCache,
+    );
   }
 
-  Future<AgentTurnResult> _directAction(AgentAction action, AgentUi ui) async {
+  /// Runs a request that succeeded before, without any planning calls.
+  Future<AgentTurnResult> _runCached(
+    CachedRoutine routine,
+    String text,
+    AgentMode mode,
+    AgentUi ui,
+  ) async {
+    _history.add({'role': 'user', 'content': text});
+    _trimHistory();
+    final plan = routine.toPlan(mode.id);
+    return _runPlanOnDevice(
+      plan,
+      ui,
+      askConfirmation: mode == AgentMode.auto,
+      mode: mode.id,
+      cacheKey: text,
+      fromCache: true,
+    );
+  }
+
+  static const Set<String> _cacheableActions = {
+    'open_app',
+    'open_url',
+    'set_volume',
+    'set_brightness',
+    'search_contact',
+  };
+
+  Future<AgentTurnResult> _directAction(AgentAction action, AgentUi ui, String userText) async {
     final result = await ctx.actions.execute(
       action,
       aiService: ctx.ai,
@@ -499,6 +716,20 @@ RULES:
     ui.addMessage(
       ChatMessage(role: 'assistant', content: text, actionResult: result, mode: AgentMode.auto.id),
     );
+    if (result.success && _cacheableActions.contains(action.action)) {
+      final step = PlanStep(
+        id: 's1',
+        title: userText,
+        kind: 'action',
+        action: action.action,
+        params: Map<String, dynamic>.from(action.params),
+        status: StepStatus.done,
+      );
+      await PlanCache.instance.remember(
+        userText,
+        Plan(goal: userText, summary: userText, mode: 'auto', steps: [step]),
+      );
+    }
     try {
       await NotificationService().showTaskCompleteNotification(
         result.success ? 'Task Completed' : 'Task Failed',

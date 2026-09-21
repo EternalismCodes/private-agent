@@ -12,6 +12,9 @@ class VoiceService {
 
   bool get isListening => _isListening;
 
+  /// True once speech recognition is available (microphone permission granted).
+  bool get isReady => _isInitialized;
+
   Future<void> init() async {
     if (_isInitialized) return;
 
@@ -59,7 +62,7 @@ class VoiceService {
   /// when nothing was heard / recognition failed. Used by the voice call.
   Future<String?> listenOnce({
     Duration listenFor = const Duration(seconds: 20),
-    Duration pauseFor = const Duration(seconds: 3),
+    Duration pauseFor = const Duration(seconds: 2),
   }) async {
     if (!_isInitialized) await init();
     if (!_isInitialized) return null;
@@ -102,9 +105,10 @@ class VoiceService {
   }
 
   /// Speaks [text] and completes when the speech has finished.
-  Future<void> speakAndWait(String text) async {
+  Future<void> speakAndWait(String text, {double? rate}) async {
     if (text.trim().isEmpty) return;
     try {
+      if (rate != null) await _tts.setSpeechRate(rate);
       await _tts.awaitSpeakCompletion(true);
       await _tts.speak(text);
     } catch (_) {}

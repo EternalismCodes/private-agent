@@ -26,8 +26,9 @@ class AgentPrefs extends ChangeNotifier {
   /// In Auto mode, ask before sending, calling, paying, deleting, posting...
   bool confirmSensitive = true;
 
-  /// Ask the model to check the screen after each UI step.
-  bool verifySteps = true;
+  /// Ask the model to check the screen after each UI step (an extra model
+  /// call per step, so off by default; failures are still detected).
+  bool verifySteps = false;
 
   /// Let the agent type saved account credentials into apps (the model never
   /// sees the secrets, it only refers to an account by label).
@@ -48,7 +49,7 @@ class AgentPrefs extends ChangeNotifier {
     autoLearnMemory = p.getBool('agent_auto_learn') ?? true;
     speakReplies = p.getBool('agent_speak_replies') ?? true;
     confirmSensitive = p.getBool('agent_confirm_sensitive') ?? true;
-    verifySteps = p.getBool('agent_verify_steps') ?? true;
+    verifySteps = p.getBool('agent_verify_steps') ?? false;
     allowCredentialFill = p.getBool('agent_allow_credentials') ?? true;
     maxRetries = p.getInt('agent_max_retries') ?? 1;
     maxReplans = p.getInt('agent_max_replans') ?? 2;

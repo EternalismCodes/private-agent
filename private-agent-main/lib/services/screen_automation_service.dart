@@ -57,6 +57,11 @@ class ScreenAutomationService {
   }
 
   /// Dump the current screen — returns a list of UI elements
+  /// The last screen that was read for the model (its nodes and foreground
+  /// package). The workflow recorder reuses it instead of dumping again.
+  List<Map<String, dynamic>> lastNodes = [];
+  String lastPackage = '';
+
   /// Each element has: text, contentDescription, className, isClickable,
   /// isEditable, isScrollable, bounds, index, depth
   Future<List<Map<String, dynamic>>> dumpScreen() async {
@@ -89,6 +94,8 @@ class ScreenAutomationService {
 
     final buffer = StringBuffer();
     final pkg = await getCurrentPackage();
+    lastNodes = nodes;
+    lastPackage = pkg ?? '';
     if (pkg != null) {
       buffer.writeln('Current app: $pkg');
     }
@@ -149,6 +156,8 @@ class ScreenAutomationService {
 
     final buffer = StringBuffer();
     final pkg = await getCurrentPackage();
+    lastNodes = nodes;
+    lastPackage = pkg ?? '';
     if (pkg != null) {
       buffer.writeln('APP: $pkg');
     }

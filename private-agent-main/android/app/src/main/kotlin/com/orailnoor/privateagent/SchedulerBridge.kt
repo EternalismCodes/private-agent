@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -53,6 +54,14 @@ object SchedulerBridge {
                     "cancelAll" -> {
                         val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                         for (id in prefs.all.keys.toList()) cancel(appContext, id)
+                        result.success(true)
+                    }
+                    "dismiss" -> {
+                        val id = call.argument<String>("id")
+                        if (id != null) {
+                            val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                            manager.cancel(id.hashCode())
+                        }
                         result.success(true)
                     }
                     "canScheduleExact" -> result.success(canScheduleExact(appContext))
@@ -141,6 +150,36 @@ object SchedulerBridge {
         }
     }
 
+    /**
+     * Turns the screen on and, when PrivateAgent may draw over other apps,
+     * opens it directly so the task starts without a tap. Otherwise the
+     * notification below is the way in.
+     */
+    @Suppress("DEPRECATION")
+    fun wakeAndLaunch(context: Context, id: String, goal: String) {
+        try {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val wl = pm.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+                "PrivateAgent:scheduledTask"
+            )
+            wl.acquire(45_000L)
+        } catch (e: Exception) {
+            // Wake lock is best-effort.
+        }
+        try {
+            if (Settings.canDrawOverlays(context)) {
+                val launch = Intent(context, MainActivity::class.java)
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                launch.putExtra(EXTRA_ID, id)
+                launch.putExtra(EXTRA_GOAL, goal)
+                context.startActivity(launch)
+            }
+        } catch (e: Exception) {
+            // Background launch not allowed: the notification still works.
+        }
+    }
+
     @Suppress("DEPRECATION")
     fun postNotification(context: Context, id: String, goal: String) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -189,6 +228,7 @@ class ScheduleReceiver : BroadcastReceiver() {
         val id = intent.getStringExtra(SchedulerBridge.EXTRA_ID) ?: return
         val goal = intent.getStringExtra(SchedulerBridge.EXTRA_GOAL) ?: ""
         SchedulerBridge.postNotification(context, id, goal)
+        SchedulerBridge.wakeAndLaunch(context, id, goal)
         context.getSharedPreferences("scheduler_alarms", Context.MODE_PRIVATE)
             .edit().remove(id).apply()
     }

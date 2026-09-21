@@ -1,6 +1,8 @@
 package com.orailnoor.privateagent
 
 import android.content.Intent
+import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -19,6 +21,27 @@ class MainActivity : FlutterActivity() {
     private val EVENT_CHANNEL = "com.privateagent/accessibility_events"
     private var eventSink: EventChannel.EventSink? = null
     private var overlayView: View? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        applyScheduleFlags(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyScheduleFlags(intent)
+    }
+
+    /** A scheduled task may start while the phone is locked or the screen is off. */
+    private fun applyScheduleFlags(intent: Intent?) {
+        if (intent != null && intent.hasExtra(SchedulerBridge.EXTRA_ID) &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1
+        ) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -43,6 +66,7 @@ class MainActivity : FlutterActivity() {
 
         registerAccessibilityChannel(flutterEngine, this)
         SchedulerBridge.register(flutterEngine, applicationContext)
+        CallBridge.register(flutterEngine, this)
     }
 
     companion object {

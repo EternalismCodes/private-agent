@@ -26,7 +26,7 @@ extension AgentModeInfo on AgentMode {
         AgentMode.chat => 'Fast conversation. No phone control.',
         AgentMode.think => 'Reasons step by step before answering. No phone control.',
         AgentMode.plan => 'Writes a step-by-step plan. Nothing is executed until you say so.',
-        AgentMode.planExecute => 'Shows a plan for approval, then runs it with verification and recovery.',
+        AgentMode.planExecute => 'Plans, then runs it right away with verification and recovery. No approval needed.',
         AgentMode.auto => 'Decides by itself: answers, acts, or plans and executes.',
       };
 

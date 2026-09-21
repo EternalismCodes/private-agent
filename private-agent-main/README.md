@@ -29,13 +29,17 @@ The original accessibility-based phone-control engine (`AgentAccessibilityServic
 | --- | --- |
 | **Chat** | Fast conversation, no phone control. |
 | **Think** | Reasons step by step first; the reasoning appears in a collapsible block. |
-| **Plan** | Writes a step-by-step plan and stops. Run it later with one tap. |
-| **Plan & Execute** | Shows the plan for approval (edit or delete steps), then runs it with verification and recovery. |
+| **Plan** | Writes a step-by-step plan and stops. Edit it if you like and run it with one tap. |
+| **Plan & Execute** | Plans, then runs it right away with recovery. No approval step. |
 | **Auto** | Decides by itself: answers, performs a single action, runs a one-app task, or plans and executes a multi-app job. Asks before sensitive steps (send, call, pay, delete, post). |
 
 ### Autonomous execution
 
-`Planner` -> `PlanRunner` -> `TaskExecutor`. Each on-screen step is handed to the existing screen agent, then **verified** against the screen, **retried** with the failure as a hint, and, if it still fails, the rest of the plan is **re-written** (retries and re-plans are configurable). Every run is stored in **Task History** with its mode and plan.
+`Planner` -> `PlanRunner` -> `TaskExecutor`. Each on-screen step is handed to the existing screen agent. When a step fails, the runner first checks whether the screen is already *past* that step (and marks it done), then retries with the failure as a hint, and finally re-writes the rest of the plan (retries and re-plans are configurable). Optional per-step verification is off by default because it costs one model call per step. Every run is stored in **Task History** with its mode and plan.
+
+### Learns exact workflows from one run
+
+Every successful on-screen task is recorded with the app it ran in, a signature of each screen, and the exact element that was tapped (label, class, centre coordinates). The next time, the task is **replayed without model calls**: it continues the moment the screen looks as recorded, taps the same element (found live, falling back to the recorded coordinates) and confirms it ended on the recorded screen. If anything differs it falls back to the model. Whole requests that worked are also remembered as routines, so repeating them skips planning as well. "open <app>" never needs a model.
 
 ### Memory, preferences, skills
 
@@ -46,7 +50,7 @@ The original accessibility-based phone-control engine (`AgentAccessibilityServic
 
 ### Scheduled tasks
 
-Create tasks in the Schedules screen or just say it in Auto mode ("every weekday at 8 check the weather"). An Android alarm posts a notification at the right time (also after reboot). The task runs immediately if the app is open, otherwise tap the notification. Android does not let an app drive other apps' screens from the background on its own.
+Create tasks in the Schedules screen or just say it in Auto mode ("every weekday at 8 check the weather"). Each schedule can use its own model, run in Auto or Plan & Execute, and runs unattended unless you turn on "Ask before sensitive steps". An exact alarm wakes the screen, and if PrivateAgent may draw over other apps it starts the task by itself; otherwise tap the notification. A PIN/pattern lock still blocks driving other apps until you unlock. The result is reported in a notification.
 
 ### Accounts vault
 
@@ -54,7 +58,7 @@ Logins are stored with the Android Keystore (`flutter_secure_storage`); if the K
 
 ### Talk to the agent
 
-The call button opens a hands-free voice loop: you speak, the agent answers aloud and, in Auto mode, does the task, then listens again. Sensitive steps are confirmed by voice.
+The call button opens a hands-free voice loop: you speak, the agent answers aloud (sentence by sentence while it is still writing) and does the task, then listens again. The call keeps running while other apps are open (a microphone foreground service with a Hang up notification), you can interrupt with "stop", and it ends when you say bye. Sensitive steps are confirmed by voice.
 
 ### Custom provider
 

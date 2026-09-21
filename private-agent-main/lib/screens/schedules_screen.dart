@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../agent/scheduler_service.dart';
+import '../services/ai_service.dart';
 import '../widgets/screen_helpers.dart';
 
 class SchedulesScreen extends StatefulWidget {
   /// Runs a task immediately (provided by the home screen).
   final Future<void> Function(String goal)? onRunNow;
-  const SchedulesScreen({super.key, this.onRunNow});
+
+  /// Lets a schedule use its own model (and load the provider's model list).
+  final AiService? aiService;
+  const SchedulesScreen({super.key, this.onRunNow, this.aiService});
 
   @override
   State<SchedulesScreen> createState() => _SchedulesScreenState();
@@ -35,11 +39,51 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
     });
   }
 
-  Future<void> _add() async {
-    final goal = TextEditingController();
-    var when = DateTime.now().add(const Duration(hours: 1));
-    when = DateTime(when.year, when.month, when.day, when.hour, 0);
-    var repeat = 'none';
+  Future<void> _pickModel(TextEditingController controller, void Function(void Function()) setLocal) async {
+    final ai = widget.aiService;
+    if (ai == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('Loading models…')));
+    List<String> models = [];
+    try {
+      models = await ai.fetchAvailableModels(ai.baseUrl, ai.apiKey);
+    } catch (_) {}
+    messenger.hideCurrentSnackBar();
+    if (!mounted) return;
+    if (models.isEmpty) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not load models. Type the model name instead.')),
+      );
+      return;
+    }
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => SizedBox(
+        height: MediaQuery.of(ctx).size.height * 0.6,
+        child: ListView.builder(
+          itemCount: models.length,
+          itemBuilder: (ctx, i) => ListTile(
+            title: Text(models[i], style: const TextStyle(fontSize: 14)),
+            onTap: () => Navigator.pop(ctx, models[i]),
+          ),
+        ),
+      ),
+    );
+    if (picked != null) setLocal(() => controller.text = picked);
+  }
+
+  Future<void> _edit([ScheduledTask? existing]) async {
+    final goal = TextEditingController(text: existing?.goal ?? '');
+    final model = TextEditingController(text: existing?.model ?? '');
+    var when = existing?.anchor ?? DateTime.now().add(const Duration(hours: 1));
+    if (existing == null) {
+      when = DateTime(when.year, when.month, when.day, when.hour, 0);
+    }
+    var repeat = existing?.repeat ?? 'none';
+    var mode = existing?.mode ?? 'auto';
+    var askFirst = existing?.askFirst ?? false;
     final formKey = GlobalKey<FormState>();
 
     final ok = await showModalBottomSheet<bool>(
@@ -56,7 +100,10 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Schedule a task', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                  Text(
+                    existing == null ? 'Schedule a task' : 'Edit scheduled task',
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                  ),
                   const SizedBox(height: 14),
                   TextFormField(
                     controller: goal,
@@ -119,7 +166,44 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
                     ],
                     onChanged: (v) => setLocal(() => repeat = v ?? 'none'),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: mode,
+                    decoration: const InputDecoration(labelText: 'How to run it', border: OutlineInputBorder()),
+                    items: const [
+                      DropdownMenuItem(value: 'auto', child: Text('Auto (decides by itself)')),
+                      DropdownMenuItem(value: 'planExecute', child: Text('Plan & Execute (always plans first)')),
+                    ],
+                    onChanged: (v) => setLocal(() => mode = v ?? 'auto'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: model,
+                    autocorrect: false,
+                    decoration: InputDecoration(
+                      labelText: 'Model for this task (optional)',
+                      hintText: 'Leave empty to use the model from Settings',
+                      border: const OutlineInputBorder(),
+                      suffixIcon: widget.aiService == null
+                          ? null
+                          : IconButton(
+                              tooltip: 'Pick from provider',
+                              icon: const Icon(Icons.list_rounded),
+                              onPressed: () => _pickModel(model, setLocal),
+                            ),
+                    ),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Ask before sensitive steps', style: TextStyle(fontSize: 14)),
+                    subtitle: const Text(
+                      'Off: sends, calls and similar steps just run, since nobody may be there to answer.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    value: askFirst,
+                    onChanged: (v) => setLocal(() => askFirst = v),
+                  ),
+                  const SizedBox(height: 8),
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton(
@@ -133,7 +217,7 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
                         }
                         Navigator.pop(ctx, true);
                       },
-                      child: const Text('Schedule'),
+                      child: Text(existing == null ? 'Schedule' : 'Save'),
                     ),
                   ),
                 ],
@@ -145,7 +229,26 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
     );
 
     if (ok == true) {
-      await _scheduler.add(goal: goal.text, when: when, repeat: repeat, mode: 'auto');
+      if (existing == null) {
+        await _scheduler.add(
+          goal: goal.text,
+          when: when,
+          repeat: repeat,
+          mode: mode,
+          model: model.text,
+          askFirst: askFirst,
+        );
+      } else {
+        existing
+          ..goal = goal.text.trim()
+          ..anchor = when
+          ..repeat = repeat
+          ..mode = mode
+          ..model = model.text.trim()
+          ..askFirst = askFirst
+          ..enabled = true;
+        await _scheduler.update(existing);
+      }
       await _reload();
     }
   }
@@ -156,7 +259,7 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Schedules')),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _add,
+        onPressed: () => _edit(),
         icon: const Icon(Icons.add_alarm_rounded),
         label: const Text('Schedule'),
       ),
@@ -194,7 +297,10 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
                 for (final t in _items)
                   Card(
                     margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
-                    child: Padding(
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => _edit(t),
+                      child: Padding(
                       padding: const EdgeInsets.fromLTRB(14, 12, 6, 8),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -221,6 +327,13 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
                                 ? 'Next: ${DateFormat('EEE d MMM, HH:mm').format(t.nextRun!)} · ${t.repeatLabel}'
                                 : '${t.repeatLabel} · off',
                             style: TextStyle(fontSize: 12.5, color: scheme.onSurface.withValues(alpha: 0.65)),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              '${t.mode == 'planExecute' ? 'Plan & Execute' : 'Auto'}${t.model.isEmpty ? '' : ' · model: ${t.model}'}${t.askFirst ? ' · asks first' : ''}',
+                              style: TextStyle(fontSize: 11.5, color: scheme.onSurface.withValues(alpha: 0.5)),
+                            ),
                           ),
                           if (t.lastRun != null)
                             Padding(
@@ -261,6 +374,7 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
                           ),
                         ],
                       ),
+                    ),
                     ),
                   ),
               ],

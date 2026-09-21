@@ -10,6 +10,7 @@ import 'shizuku_service.dart';
 import 'skill_memory_service.dart';
 import 'recovery_engine.dart';
 import '../models/saved_skill.dart';
+import '../agent/workflow.dart';
 
 /// How the last [TaskExecutor.executeTask] call ended.
 enum TaskOutcome { none, success, failed, cancelled, notReady }
@@ -37,6 +38,11 @@ class TaskExecutor {
   /// history entry and no end-of-task pauses (the caller reports instead).
   final bool quiet;
 
+  /// When true the fixed waits between steps are replaced by a wait that ends
+  /// as soon as the screen has stopped changing (never longer than the
+  /// original delay), which makes runs noticeably faster.
+  final bool fastSettle;
+
   /// Extra guidance appended to the system prompt (memory, hints, accounts).
   final String extraContext;
 
@@ -51,6 +57,12 @@ class TaskExecutor {
   /// Tokens consumed by the last [executeTask] call.
   int tokensUsed = 0;
 
+  /// True when the last call was completed by instantly replaying a learned
+  /// workflow (no model calls for navigation).
+  bool usedReplay = false;
+
+  String _goal = '';
+
   /// Set to true to cancel the running task
   bool _cancelled = false;
   Completer<void>? _cancelCompleter;
@@ -62,6 +74,7 @@ class TaskExecutor {
     required ShizukuService shizukuService,
     this.onProgress,
     this.quiet = false,
+    this.fastSettle = false,
     this.extraContext = '',
     this.credentialResolver,
   }) : _aiService = aiService,
@@ -150,6 +163,8 @@ Rules:
     _cancelled = false;
     lastOutcome = TaskOutcome.failed;
     tokensUsed = 0;
+    usedReplay = false;
+    _goal = userGoal;
 
     await ScreenAutomationService.logToNative(
       "[TaskExecutor] Checking if accessibility service is running...",
@@ -172,12 +187,20 @@ Rules:
 
     // Check skill memory first
     final savedSkill = await _skillMemory.findSkill(userGoal);
-    if (savedSkill != null && savedSkill.isReliable) {
+    if (savedSkill != null && savedSkill.isReliable && _canReplay(savedSkill, userGoal)) {
       _report(
-        'Found saved skill! Replaying ${savedSkill.steps.length} steps...',
+        'Found a learned workflow! Replaying ${savedSkill.steps.length} steps...',
       );
+      final replayWatch = Stopwatch()..start();
       final replaySuccess = await _replaySkill(savedSkill, results);
+      replayWatch.stop();
       if (replaySuccess) {
+        usedReplay = true;
+        await _skillMemory.recordReplay(savedSkill.id, replayWatch.elapsedMilliseconds);
+        var answer = 'Done.';
+        if (_wantsInformation(userGoal)) {
+          answer = (await _answerFromScreen(userGoal)) ?? 'Done.';
+        }
         results.add('Task complete via skill memory.');
         _report('Task complete (via skill memory).');
         await _notify(
@@ -193,10 +216,18 @@ Rules:
         );
         await _toast('Task Complete! (Memory)');
         lastOutcome = TaskOutcome.success;
-        return 'Done.';
+        return answer;
       } else {
+        if (_cancelled) {
+          lastOutcome = TaskOutcome.cancelled;
+          return 'Task cancelled.';
+        }
         _report('Replay failed, falling back to AI...');
         await _skillMemory.recordFailure(savedSkill.id);
+        // Start the AI from a clean state so that what it records is a full,
+        // replayable workflow rather than the tail of a half-finished one.
+        await _screenService.pressHome();
+        await Future.delayed(const Duration(milliseconds: 1000));
       }
     }
 
@@ -278,7 +309,11 @@ Rules:
       } else if (lastAction == 'scroll') {
         delay = 1000; // Scrolling is relatively fast
       }
-      await Future.delayed(Duration(milliseconds: delay));
+      if (fastSettle) {
+        await _waitForSettle(maxMs: delay, lastAction: lastAction);
+      } else {
+        await Future.delayed(Duration(milliseconds: delay));
+      }
 
       // 1. Read the current screen text
       final screenContent = _aiService.useScreenCompression
@@ -499,6 +534,12 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
       bool success = false;
       String actionResult = '';
 
+      // Remember the screen this action is performed on (exact-replay data).
+      // (the screen the model just looked at, so no extra screen read).
+      final ScreenSnap? preSnap = (action == 'done' || action == 'wait')
+          ? null
+          : ScreenSnap(_screenService.lastPackage, _screenService.lastNodes);
+
       switch (action) {
         case 'click_text':
           final text = params['text'] as String? ?? '';
@@ -583,6 +624,7 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
             reasoning.trim().isEmpty ? 'Agent finished its goal.' : reasoning,
           );
           await _toast('Task completed');
+          await _learnWorkflow(userGoal, executedSteps, settle: false);
           lastOutcome = TaskOutcome.success;
           return reasoning.trim().isEmpty ? 'Done.' : reasoning.trim();
 
@@ -654,7 +696,13 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
       } else {
         consecutiveFailures = 0;
         lastFailedAction = '';
-        executedSteps.add(ActionStep(action: action, params: params));
+        executedSteps.add(
+          ActionStep(
+            action: action,
+            params: Map<String, dynamic>.from(params),
+            meta: WorkflowKit.stepMeta(action, params, preSnap),
+          ),
+        );
       }
 
       results.add('Step ${step + 1}: $actionResult ($reasoning)');
@@ -679,8 +727,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
           results,
         );
 
-        // Save to skill memory
-        await _skillMemory.saveSkill(userGoal, executedSteps);
+        // Learn the exact workflow from this single successful run
+        await _learnWorkflow(userGoal, executedSteps, settle: true);
 
         await _toast('Task Complete!');
         // Wait 4 seconds so the user can see the result before jumping back
@@ -802,42 +850,234 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
   }
 
   /// Replays a saved skill without using the LLM
+  // ─── Exact workflow learning & instant replay ─────────────────────────
+
+  /// Waits until the screen stops changing after an action. It ends early once
+  /// the screen has changed (or half the maximum wait has passed) and then
+  /// stayed the same for two consecutive reads.
+  Future<void> _waitForSettle({required int maxMs, required String lastAction}) async {
+    if (lastAction.isEmpty) {
+      await Future.delayed(const Duration(milliseconds: 150));
+      return;
+    }
+    final minMs = lastAction == 'open_app' ? 1200 : (lastAction == 'scroll' ? 350 : 450);
+    final before = WorkflowKit.labels(_screenService.lastNodes, max: 40).join('|');
+    final watch = Stopwatch()..start();
+    var previous = '';
+    var stable = 0;
+    await Future.delayed(const Duration(milliseconds: 200));
+    while (watch.elapsedMilliseconds < maxMs) {
+      if (_cancelled) return;
+      final nodes = await _screenService.dumpScreen();
+      final sig = WorkflowKit.labels(nodes, max: 40).join('|');
+      stable = (sig.isNotEmpty && sig == previous) ? stable + 1 : 0;
+      previous = sig;
+      final changed = sig != before;
+      if (stable >= 2 &&
+          watch.elapsedMilliseconds >= minMs &&
+          (changed || watch.elapsedMilliseconds >= maxMs ~/ 2)) {
+        return;
+      }
+      await Future.delayed(const Duration(milliseconds: 150));
+    }
+  }
+
+  Future<ScreenSnap?> _snapshot() async {
+    try {
+      final pkg = await _screenService.getCurrentPackage() ?? '';
+      final nodes = await _screenService.dumpScreen();
+      return ScreenSnap(pkg, nodes);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Stores the executed steps (with their exact targets and screen
+  /// signatures) so the same task can be replayed without any model call.
+  Future<void> _learnWorkflow(
+    String goal,
+    List<ActionStep> steps, {
+    required bool settle,
+  }) async {
+    try {
+      if (steps.isEmpty) return;
+      if (settle) await Future.delayed(const Duration(milliseconds: 600));
+      final end = await _snapshot();
+      await _skillMemory.saveSkill(
+        goal,
+        WorkflowKit.compact(steps),
+        finalPkg: end?.pkg ?? '',
+        finalSig: end == null ? const <String>[] : WorkflowKit.labels(end.nodes),
+      );
+    } catch (_) {}
+  }
+
+  static String _norm(String s) => s
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9\s]'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  static final RegExp _dynamicWords = RegExp(
+    r'\b(latest|last|newest|unread|recent|current|currently|now|today|tonight|tomorrow|reply|respond|summarize|summarise)\b',
+  );
+
+  static final RegExp _infoWords = RegExp(
+    r'\b(what|which|who|whom|when|where|how many|how much|read|tell me|check|find out|show me|list|count|status|latest|unread|any new|is there|are there)\b',
+  );
+
+  bool _wantsInformation(String goal) => _infoWords.hasMatch(goal.toLowerCase());
+
+  /// A replay repeats literal taps and typed text, so only replay when that is
+  /// what the current goal asks for.
+  bool _canReplay(SavedSkill skill, String goal) {
+    final g = _norm(goal);
+    final exact = _norm(skill.task) == g;
+    for (final step in skill.steps) {
+      if (step.action != 'type_text') continue;
+      final typed = _norm((step.params['text'] ?? '').toString());
+      if (typed.isEmpty || g.contains(typed)) continue;
+      // Text the model composed itself: repeat it only for the very same,
+      // non-contextual request.
+      if (!exact || _dynamicWords.hasMatch(g)) return false;
+    }
+    return true;
+  }
+
+  Future<String?> _answerFromScreen(String goal) async {
+    try {
+      final screen = await _screenService.getCompressedScreenDescription(goal);
+      final res = await _aiService.sendTaskMessage(
+        'You answer questions about what is on an Android phone screen. Use only the screen text provided. Be concise: one to three sentences.',
+        'TASK: $goal\n\nSCREEN:\n$screen\n\nAnswer the task.',
+      );
+      tokensUsed += res.totalTokens;
+      final text = res.content.trim();
+      return text.isEmpty ? null : text;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Waits until the foreground app is [pkg] and the screen shows at least
+  /// [minCoverage] of the recorded [sig] labels. Returns the matching snapshot.
+  Future<ScreenSnap?> _waitForScreen(
+    String pkg,
+    List<String> sig, {
+    int timeoutMs = 9000,
+    double minCoverage = 0.6,
+  }) async {
+    final watch = Stopwatch()..start();
+    while (watch.elapsedMilliseconds < timeoutMs) {
+      if (_cancelled) return null;
+      final snap = await _snapshot();
+      if (snap != null &&
+          (pkg.isEmpty || snap.pkg == pkg) &&
+          WorkflowKit.matches(sig, WorkflowKit.labels(snap.nodes), minCoverage: minCoverage)) {
+        return snap;
+      }
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
+    return null;
+  }
+
+  Future<bool> _waitForPackage(String pkg, {int timeoutMs = 8000}) async {
+    final watch = Stopwatch()..start();
+    while (watch.elapsedMilliseconds < timeoutMs) {
+      if (_cancelled) return false;
+      if (await _screenService.getCurrentPackage() == pkg) return true;
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
+    return false;
+  }
+
+  /// Taps the element a click step recorded: found live by label (nearest to
+  /// where it was), otherwise by text, otherwise at the recorded coordinates.
+  Future<bool> _replayClick(ActionStep step, ScreenSnap? snap) async {
+    final meta = step.meta;
+    final recText = (meta['tx'] ?? '').toString();
+    final recDesc = (meta['td'] ?? '').toString();
+    final label = recText.isNotEmpty
+        ? recText
+        : (recDesc.isNotEmpty ? recDesc : (step.params['text'] ?? '').toString());
+    final recX = (meta['cx'] as num?)?.toDouble();
+    final recY = (meta['cy'] as num?)?.toDouble();
+
+    // The element may still be loading: look for it for up to ~2.5 seconds.
+    var live = snap;
+    for (var attempt = 0; attempt < 10; attempt++) {
+      if (live != null && label.isNotEmpty) {
+        final node = WorkflowKit.findByLabel(
+          live.nodes,
+          label,
+          cx: recX ?? 0,
+          cy: recY ?? 0,
+          cls: (meta['tc'] ?? '').toString(),
+        );
+        if (node != null) {
+          return _screenService.clickAt(WorkflowKit.centerX(node), WorkflowKit.centerY(node));
+        }
+      }
+      if (label.isEmpty || attempt == 9) break;
+      await Future.delayed(const Duration(milliseconds: 250));
+      live = await _snapshot();
+    }
+
+    if (step.action == 'click_text') {
+      final text = (step.params['text'] ?? '').toString();
+      if (text.isNotEmpty && await _screenService.clickByText(text)) return true;
+    }
+    if (recX != null && recY != null) {
+      return _screenService.clickAt(recX, recY);
+    }
+    final x = (step.params['x'] as num?)?.toDouble();
+    final y = (step.params['y'] as num?)?.toDouble();
+    if (x != null && y != null) return _screenService.clickAt(x, y);
+    return false;
+  }
+
   Future<bool> _replaySkill(SavedSkill skill, List<String> results) async {
     for (int i = 0; i < skill.steps.length; i++) {
       if (_cancelled) return false;
 
       final step = skill.steps[i];
+      final meta = step.meta;
+      final exact = meta.isNotEmpty;
+      final pkg = (meta['pkg'] ?? '').toString();
+      final sig = WorkflowKit.stringList(meta['sig']);
       _report('Replaying step ${i + 1}/${skill.steps.length}: ${step.action}');
 
-      // Delay before executing each step
-      int delay = 1200;
-      if (step.action == 'open_app')
-        delay = 3000;
-      else if (step.action == 'type_text')
-        delay = 2000;
-      else if (step.action == 'click_text' || step.action == 'click_at')
-        delay = 1500;
-      else if (step.action == 'scroll')
-        delay = 1000;
-
-      await Future.delayed(Duration(milliseconds: delay));
+      ScreenSnap? snap;
+      if (exact && step.action != 'open_app') {
+        // Continue the moment the screen looks like it did when recorded.
+        snap = await _waitForScreen(pkg, sig);
+        if (snap == null) {
+          results.add('Replay stopped at step ${i + 1}: screen is not as recorded');
+          return false;
+        }
+      } else if (!exact) {
+        // Workflow saved by an older version: fixed delays.
+        int delay = 1200;
+        if (step.action == 'open_app') {
+          delay = 3000;
+        } else if (step.action == 'type_text') {
+          delay = 2000;
+        } else if (step.action == 'click_text' || step.action == 'click_at') {
+          delay = 1500;
+        } else if (step.action == 'scroll') {
+          delay = 1000;
+        }
+        await Future.delayed(Duration(milliseconds: delay));
+      }
 
       bool success = false;
       String actionResult = '';
 
       switch (step.action) {
         case 'click_text':
-          final text = step.params['text'] as String? ?? '';
-          success = await _screenService.clickByText(text);
-          actionResult = success
-              ? 'Clicked "$text"'
-              : 'Could not find "$text" to click';
-          break;
         case 'click_at':
-          final x = (step.params['x'] as num?)?.toDouble() ?? 0;
-          final y = (step.params['y'] as num?)?.toDouble() ?? 0;
-          success = await _screenService.clickAt(x, y);
-          actionResult = success ? 'Clicked at ($x, $y)' : 'Click failed';
+          success = await _replayClick(step, snap);
+          actionResult = success ? 'Tapped the recorded target' : 'Could not tap the recorded target';
           break;
         case 'type_text':
           final text = step.params['text'] as String? ?? '';
@@ -907,8 +1147,40 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
       if (!success) {
         return false; // Break out of replay if a step fails
       }
+
+      // Give the UI a moment to react before looking at it again.
+      if (step.action == 'open_app') {
+        final nextPkg = i + 1 < skill.steps.length
+            ? (skill.steps[i + 1].meta['pkg'] ?? '').toString()
+            : skill.finalPkg;
+        if (nextPkg.isNotEmpty) {
+          await _waitForPackage(nextPkg);
+          await Future.delayed(const Duration(milliseconds: 400));
+        } else {
+          await Future.delayed(const Duration(milliseconds: 3000));
+        }
+      } else if (step.action == 'type_text') {
+        await Future.delayed(const Duration(milliseconds: 500));
+      } else if (step.action == 'scroll' || step.action == 'swipe') {
+        await Future.delayed(const Duration(milliseconds: 650));
+      } else {
+        await Future.delayed(const Duration(milliseconds: 350));
+      }
     }
 
+    // Confirm the workflow ended where it did when it was learned.
+    if (skill.finalPkg.isNotEmpty && skill.finalSig.length >= 2) {
+      final end = await _waitForScreen(
+        skill.finalPkg,
+        skill.finalSig,
+        timeoutMs: 6000,
+        minCoverage: 0.5,
+      );
+      if (end == null) {
+        results.add('Replay finished but the final screen is not as recorded');
+        return false;
+      }
+    }
     return true; // All steps succeeded
   }
 

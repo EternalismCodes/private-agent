@@ -131,6 +131,20 @@ class PlanRunner {
         break;
       }
 
+      // The screen may already be past this step (the previous step or the
+      // agent itself went further). Check before repeating anything.
+      final reached = await _reconcile(plan, i);
+      if (_cancelled) break;
+      if (reached > i) {
+        for (var k = i; k < reached && k < plan.steps.length; k++) {
+          plan.steps[k].status = StepStatus.done;
+          plan.steps[k].result = 'Already done on screen';
+        }
+        onChanged();
+        i = reached;
+        continue;
+      }
+
       if (step.attempts <= maxRetries) {
         _hints[step.id] = outcome.message;
         onProgress('Retrying step ${i + 1} with a different approach…');
@@ -345,8 +359,14 @@ class PlanRunner {
       screenService: ctx.actions.screenAutomation,
       appLauncher: ctx.actions.appLauncher,
       shizukuService: ctx.actions.shizuku,
-      onProgress: (m) => onProgress(m),
+      onProgress: (m) {
+        onProgress(m);
+        // Show what the screen agent is doing right on the plan card.
+        step.result = _clip(m.replaceAll('\n', ' '), 140);
+        onChanged();
+      },
       quiet: true,
+      fastSettle: true,
       extraContext: extra,
       credentialResolver: ctx.prefs.allowCredentialFill
           ? ((String account, String field) => ctx.vault.secretFor(account, field))
@@ -367,6 +387,10 @@ class PlanRunner {
       default:
         return _StepOutcome(false, text);
     }
+
+    // A replayed workflow already confirmed it ended on the recorded screen,
+    // so no model call is needed to verify it.
+    if (executor.usedReplay) return _StepOutcome(true, text);
 
     if (ctx.prefs.verifySteps && step.expected.trim().isNotEmpty && !_cancelled) {
       final verdict = await _verify(step, text);
@@ -426,7 +450,15 @@ class PlanRunner {
         .map((s) => '- ${s.title}${s.result.isEmpty ? '' : ' → ${_clip(s.result, 120)}'}')
         .join('\n');
     if (done.isNotEmpty) b.writeln('Already done:\n$done');
+    final upcoming = plan.steps
+        .skip(plan.steps.indexOf(step) + 1)
+        .map((s) => '- ${s.title}')
+        .join('\n');
+    if (upcoming.isNotEmpty) b.writeln('Later steps (handled separately, do not do them now):\n$upcoming');
     if (step.expected.isNotEmpty) b.writeln('Expected result of this sub-task: ${step.expected}');
+    b.writeln(
+      'IMPORTANT: the screen may already be further along than this sub-task expects. At your very first look, if the expected result is already visible, or the screen already shows the result of a later step, answer immediately with action "done" and is_complete true. Never repeat or undo work that is already on screen.',
+    );
     final hint = _hints[step.id];
     if (hint != null && hint.isNotEmpty) {
       b.writeln(
@@ -452,6 +484,45 @@ class PlanRunner {
       }
     }
     return b.toString();
+  }
+
+  /// Returns the index of the first step whose outcome is not yet visible on
+  /// screen (>= [index]). One short model call, only used after a failure.
+  Future<int> _reconcile(Plan plan, int index) async {
+    try {
+      final screen = _clip(await _screenSnapshot(plan.goal), 2200);
+      if (screen.isEmpty) return index;
+      final remaining = <String>[];
+      for (var k = index; k < plan.steps.length; k++) {
+        final s = plan.steps[k];
+        remaining.add(
+          '${k - index + 1}. ${s.title}${s.expected.isEmpty ? '' : ' (result: ${s.expected})'}',
+        );
+      }
+      final res = await ctx.llm.complete(
+        [
+          {
+            'role': 'system',
+            'content': 'You judge progress of a phone-automation plan from the current screen. You output only compact JSON.',
+          },
+          {
+            'role': 'user',
+            'content':
+                'GOAL: ${plan.goal}\n\nREMAINING STEPS, in order:\n${remaining.join('\n')}\n\nCURRENT SCREEN:\n$screen\n\nHow many of these steps, counting in order from step 1, are already done judging by the screen? A step counts as done when its result is visible, or when the screen clearly shows later progress that requires it. Use 0 if step 1 is clearly not done.\nReturn ONLY JSON: {"achieved": 0}',
+          },
+        ],
+        temperature: 0.0,
+        maxTokens: 120,
+        retries: 0,
+      );
+      _tokens += res.totalTokens;
+      final json = JsonUtils.extractObject(res.content);
+      final n = json != null && json['achieved'] is num ? (json['achieved'] as num).toInt() : 0;
+      if (n <= 0) return index;
+      return index + (n > remaining.length ? remaining.length : n);
+    } catch (_) {
+      return index;
+    }
   }
 
   Future<String> _screenSnapshot(String goal) async {
