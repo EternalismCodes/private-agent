@@ -9,6 +9,9 @@ import 'agent_mode.dart';
 import 'json_utils.dart';
 import 'memory_service.dart';
 import 'plan.dart';
+import '../services/skill_memory_service.dart';
+import 'app_opener.dart';
+import 'llm_client.dart';
 import 'plan_cache.dart';
 import 'plan_runner.dart';
 import 'planner.dart';
@@ -81,6 +84,8 @@ class AgentController {
   bool _voiceCall = false;
   bool _unattended = false;
   bool _spokeThisTurn = false;
+  int _runId = 0;
+  Timer? _watchdog;
 
   bool get busy => _busy;
 
@@ -102,10 +107,21 @@ class AgentController {
     }
   }
 
+  /// Stops whatever is running: aborts in-flight model requests immediately
+  /// (so nothing can hang on a slow provider) and the phone-control loop.
   void cancel() {
     _cancelled = true;
+    LlmClient.abortAll();
     _runner?.cancel();
     ctx.actions.cancelTask();
+  }
+
+  /// Last resort when a run does not wind down after [cancel].
+  void forceReset() {
+    cancel();
+    _runId++;
+    _busy = false;
+    _watchdog?.cancel();
   }
 
   // ─── Entry points ──────────────────────────────────────────────────────
@@ -127,6 +143,9 @@ class AgentController {
     _voiceCall = voice;
     _unattended = unattended;
     _spokeThisTurn = false;
+    final myRun = ++_runId;
+    _watchdog?.cancel();
+    _watchdog = Timer(const Duration(minutes: 15), cancel);
     try {
       await ctx.ensureLoaded();
 
@@ -134,6 +153,8 @@ class AgentController {
       if (mode == AgentMode.auto || mode == AgentMode.planExecute) {
         final local = await _tryLocalIntent(text, ui);
         if (local != null) return local;
+        final template = await _tryTemplate(text, mode, ui);
+        if (template != null) return template;
       }
 
       // A request that already worked once is repeated without asking the
@@ -178,11 +199,15 @@ class AgentController {
           return await _auto(text, ui);
       }
     } catch (e) {
+      if (_cancelled) return const AgentTurnResult(reply: 'Stopped.', success: false);
       final message = 'Error: ${e.toString().replaceFirst('Exception: ', '')}';
       ui.addMessage(ChatMessage(role: 'assistant', content: message, mode: mode.id));
       return AgentTurnResult(reply: message, success: false);
     } finally {
-      _busy = false;
+      if (myRun == _runId) {
+        _busy = false;
+        _watchdog?.cancel();
+      }
     }
   }
 
@@ -197,6 +222,9 @@ class AgentController {
     }
     _busy = true;
     _cancelled = false;
+    final myRun = ++_runId;
+    _watchdog?.cancel();
+    _watchdog = Timer(const Duration(minutes: 15), cancel);
     try {
       await ctx.ensureLoaded();
       return await _runPlan(
@@ -207,13 +235,21 @@ class AgentController {
         cacheKey: plan.goal,
       );
     } catch (e) {
+      if (_cancelled) {
+        plan.state = PlanState.cancelled;
+        ui.refresh();
+        return const AgentTurnResult(reply: 'Stopped.', success: false);
+      }
       final text = 'Error: ${e.toString().replaceFirst('Exception: ', '')}';
       plan.state = PlanState.failed;
       ui.refresh();
       ui.addMessage(ChatMessage(role: 'assistant', content: text));
       return AgentTurnResult(reply: text, success: false);
     } finally {
-      _busy = false;
+      if (myRun == _runId) {
+        _busy = false;
+        _watchdog?.cancel();
+      }
     }
   }
 
@@ -588,6 +624,21 @@ RULES:
     caseSensitive: false,
   );
 
+  /// A request that matches a learned template ("search <x> on youtube")
+  /// runs straight from the recorded taps with the new value, no model call.
+  Future<AgentTurnResult?> _tryTemplate(String text, AgentMode mode, AgentUi ui) async {
+    final match = await SkillMemoryService().matchSkill(text);
+    if (match == null || match.value == null || !match.skill.isReliable) return null;
+    _history.add({'role': 'user', 'content': text});
+    _trimHistory();
+    return _runPlanOnDevice(
+      Plan.single(text, mode: mode.id),
+      ui,
+      askConfirmation: false,
+      mode: mode.id,
+    );
+  }
+
   /// "open Instagram": opens the app straight away, no model call.
   Future<AgentTurnResult?> _tryLocalIntent(String text, AgentUi ui) async {
     final m = _openIntent.firstMatch(text);
@@ -600,7 +651,7 @@ RULES:
       params: {'app_name': name},
       response: 'Opening $name.',
     );
-    final result = await ctx.actions.execute(action, aiService: ctx.ai, onProgress: ui.onProgress);
+    final result = await AppOpener.open(ctx.actions, ctx.ai, name, onProgress: ui.onProgress);
     final details = (result.details ?? '').trim();
     final failed = !result.success ||
         RegExp(r'^(error|could not|cannot|can.t|no app|not found|failed|unable)', caseSensitive: false)

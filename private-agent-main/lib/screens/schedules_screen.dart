@@ -21,6 +21,7 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
   List<ScheduledTask> _items = [];
   bool _loading = true;
   bool _exactOk = true;
+  bool _overlayOk = true;
 
   @override
   void initState() {
@@ -31,10 +32,12 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
   Future<void> _reload() async {
     await _scheduler.load(force: true);
     final exact = await _scheduler.canScheduleExact();
+    final overlay = await _scheduler.canDrawOverlays();
     if (!mounted) return;
     setState(() {
       _items = List<ScheduledTask>.from(_scheduler.items);
       _exactOk = exact;
+      _overlayOk = overlay;
       _loading = false;
     });
   }
@@ -273,6 +276,19 @@ class _SchedulesScreenState extends State<SchedulesScreen> {
                   text:
                       'At the scheduled time PrivateAgent runs the task if the app is open, or posts a notification: tap it and the task starts. Android does not allow apps to control the screen from the background without you.',
                 ),
+                if (!_overlayOk)
+                  InfoBanner(
+                    icon: Icons.layers_outlined,
+                    color: Colors.orange,
+                    text:
+                        'Allow "Display over other apps" so a scheduled task can wake the phone and open apps by itself. Without it, tap the notification to start the task.',
+                    action: TextButton(
+                      onPressed: () async {
+                        await _scheduler.openOverlaySettings();
+                      },
+                      child: const Text('Allow'),
+                    ),
+                  ),
                 if (!_exactOk)
                   InfoBanner(
                     icon: Icons.alarm_off_rounded,

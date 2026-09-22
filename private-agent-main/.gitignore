@@ -55,3 +55,8 @@ google-services.json
 
 # Local credentials bundled only into developer test builds
 /assets/local_config/ai_test_config.json
+
+# Release signing (never commit these)
+android/key.properties
+android/app/*.jks
+android/app/*.keystore

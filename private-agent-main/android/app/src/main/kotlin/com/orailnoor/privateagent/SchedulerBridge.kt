@@ -64,6 +64,16 @@ object SchedulerBridge {
                         }
                         result.success(true)
                     }
+                    "canDrawOverlays" -> result.success(Settings.canDrawOverlays(appContext))
+                    "openOverlaySettings" -> {
+                        val intent = Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${appContext.packageName}")
+                        )
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        appContext.startActivity(intent)
+                        result.success(true)
+                    }
                     "canScheduleExact" -> result.success(canScheduleExact(appContext))
                     "openExactAlarmSettings" -> {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

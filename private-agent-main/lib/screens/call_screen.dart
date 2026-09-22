@@ -178,8 +178,9 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
       for (var attempt = 0; attempt < 2 && _active; attempt++) {
         _setPhase(CallPhase.listening);
         final answer = await widget.voice.listenOnce(
-          listenFor: const Duration(seconds: 8),
-          pauseFor: const Duration(seconds: 2),
+          maxSpeech: const Duration(seconds: 8),
+          endSilence: const Duration(milliseconds: 900),
+          noSpeechTimeout: const Duration(seconds: 6),
         );
         if (answer == null || answer.trim().isEmpty) continue;
         if (_no.hasMatch(answer)) return false;
@@ -223,8 +224,9 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
         if (heard == null) {
           _setPhase(CallPhase.listening);
           heard = await widget.voice.listenOnce(
-            listenFor: const Duration(seconds: 20),
-            pauseFor: const Duration(milliseconds: 1500),
+            maxSpeech: const Duration(seconds: 30),
+            endSilence: const Duration(milliseconds: 1400),
+            noSpeechTimeout: const Duration(seconds: 10),
           );
         }
         if (!_active) break;
@@ -265,8 +267,9 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
             continue;
           }
           final said = (await widget.voice.listenOnce(
-                listenFor: const Duration(seconds: 12),
-                pauseFor: const Duration(milliseconds: 1500),
+                maxSpeech: const Duration(seconds: 20),
+                endSilence: const Duration(milliseconds: 1200),
+                noSpeechTimeout: const Duration(seconds: 6),
               ) ??
               '')
               .trim();

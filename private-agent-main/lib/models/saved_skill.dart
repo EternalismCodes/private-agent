@@ -53,6 +53,12 @@ class SavedSkill {
   int replayCount;
   int lastReplayMs;
 
+  /// Parameterised workflows: the words that identify the task (for example
+  /// [youtube, search]) and the example value that was typed ("cats videos").
+  /// A request with the same skeleton and a different value reuses the steps.
+  List<String> skeleton;
+  String slotExample;
+
   SavedSkill({
     required this.id,
     required this.task,
@@ -65,7 +71,12 @@ class SavedSkill {
     List<String>? finalSig,
     this.replayCount = 0,
     this.lastReplayMs = 0,
-  }) : finalSig = finalSig ?? <String>[];
+    List<String>? skeleton,
+    this.slotExample = '',
+  })  : finalSig = finalSig ?? <String>[],
+        skeleton = skeleton ?? <String>[];
+
+  bool get isTemplate => skeleton.length >= 2 && slotExample.isNotEmpty;
 
   /// True when every step carries exact-replay data.
   bool get isExact => steps.isNotEmpty && steps.every((s) => s.meta.isNotEmpty || s.action == 'open_app');
@@ -85,6 +96,8 @@ class SavedSkill {
       finalSig: List<String>.from(json['final_sig'] ?? []),
       replayCount: json['replay_count'] as int? ?? 0,
       lastReplayMs: json['last_replay_ms'] as int? ?? 0,
+      skeleton: List<String>.from(json['skeleton'] ?? []),
+      slotExample: json['slot_example'] as String? ?? '',
     );
   }
 
@@ -101,6 +114,8 @@ class SavedSkill {
       'final_sig': finalSig,
       'replay_count': replayCount,
       'last_replay_ms': lastReplayMs,
+      'skeleton': skeleton,
+      'slot_example': slotExample,
     };
   }
 }

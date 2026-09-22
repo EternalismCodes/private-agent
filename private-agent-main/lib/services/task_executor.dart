@@ -186,13 +186,16 @@ Rules:
     _report('Starting task: $userGoal');
 
     // Check skill memory first
-    final savedSkill = await _skillMemory.findSkill(userGoal);
-    if (savedSkill != null && savedSkill.isReliable && _canReplay(savedSkill, userGoal)) {
+    final skillMatch = await _skillMemory.matchSkill(userGoal);
+    final savedSkill = skillMatch?.skill;
+    final slotValue = skillMatch?.value;
+    if (savedSkill != null && savedSkill.isReliable &&
+        _canReplay(savedSkill, userGoal, templated: slotValue != null)) {
       _report(
         'Found a learned workflow! Replaying ${savedSkill.steps.length} steps...',
       );
       final replayWatch = Stopwatch()..start();
-      final replaySuccess = await _replaySkill(savedSkill, results);
+      final replaySuccess = await _replaySkill(savedSkill, results, value: slotValue);
       replayWatch.stop();
       if (replaySuccess) {
         usedReplay = true;
@@ -930,13 +933,14 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
 
   /// A replay repeats literal taps and typed text, so only replay when that is
   /// what the current goal asks for.
-  bool _canReplay(SavedSkill skill, String goal) {
+  bool _canReplay(SavedSkill skill, String goal, {bool templated = false}) {
     final g = _norm(goal);
     final exact = _norm(skill.task) == g;
     for (final step in skill.steps) {
       if (step.action != 'type_text') continue;
       final typed = _norm((step.params['text'] ?? '').toString());
       if (typed.isEmpty || g.contains(typed)) continue;
+      if (templated && typed == _norm(skill.slotExample)) continue;
       // Text the model composed itself: repeat it only for the very same,
       // non-contextual request.
       if (!exact || _dynamicWords.hasMatch(g)) return false;
@@ -1036,7 +1040,11 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
     return false;
   }
 
-  Future<bool> _replaySkill(SavedSkill skill, List<String> results) async {
+  Future<bool> _replaySkill(
+    SavedSkill skill,
+    List<String> results, {
+    String? value,
+  }) async {
     for (int i = 0; i < skill.steps.length; i++) {
       if (_cancelled) return false;
 
@@ -1080,7 +1088,11 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
           actionResult = success ? 'Tapped the recorded target' : 'Could not tap the recorded target';
           break;
         case 'type_text':
-          final text = step.params['text'] as String? ?? '';
+          var text = step.params['text'] as String? ?? '';
+          // A learned template: type the new value where the example was typed.
+          if (value != null && skill.isTemplate && _norm(text) == _norm(skill.slotExample)) {
+            text = value;
+          }
           final hint = step.params['field_hint'] as String?;
           success = await _screenService.typeText(text, fieldHint: hint);
           actionResult = success ? 'Typed "$text"' : 'Could not type text';
@@ -1174,7 +1186,7 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
         skill.finalPkg,
         skill.finalSig,
         timeoutMs: 6000,
-        minCoverage: 0.5,
+        minCoverage: skill.isTemplate ? 0.35 : 0.5,
       );
       if (end == null) {
         results.add('Replay finished but the final screen is not as recorded');

@@ -95,7 +95,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   // ─── Scheduled tasks ────────────────────────────────────────────────────
 
-  bool _canRunScheduled() => mounted && !_isLoading && !_inCall && !_controller.busy;
+  bool _appResumed = true;
+
+  /// Android blocks apps in the background from opening other apps, so a
+  /// scheduled task only starts while PrivateAgent is in front. When it is
+  /// not, the alarm notification (or the overlay launch) brings it forward.
+  bool _canRunScheduled() =>
+      mounted && _appResumed && !_isLoading && !_inCall && !_controller.busy;
 
   void _startScheduler() {
     final scheduler = SchedulerService.instance;
@@ -270,6 +276,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         });
       }
     } finally {
+      _messages.removeWhere(_isEmptyBubble);
       await _saveSession();
       if (mounted) {
         setState(() {
@@ -281,6 +288,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       }
     }
   }
+
+  static bool _isEmptyBubble(ChatMessage m) =>
+      !m.isUser &&
+      m.content.trim().isEmpty &&
+      m.plan == null &&
+      m.reasoning.isEmpty &&
+      m.actionResult == null;
 
   // ─── Plan card actions ──────────────────────────────────────────────────
 
@@ -540,6 +554,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     setState(() {
       _appLifecycleState = state;
     });
+    _appResumed = state == AppLifecycleState.resumed;
     if (state == AppLifecycleState.resumed) {
       unawaited(
         SchedulerService.instance.checkDue(
@@ -875,6 +890,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           _actionHandler.cancelTask();
                           setState(() {
                             _progress = 'Stopping...';
+                          });
+                          // If the run does not wind down by itself, unblock the UI.
+                          Future.delayed(const Duration(seconds: 4), () {
+                            if (!mounted || !_isLoading) return;
+                            _controller.forceReset();
+                            setState(() {
+                              _messages.removeWhere(_isEmptyBubble);
+                              _isLoading = false;
+                              _progress = '';
+                            });
                           });
                         },
                         icon: const Icon(

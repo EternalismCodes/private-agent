@@ -41,6 +41,8 @@ The original accessibility-based phone-control engine (`AgentAccessibilityServic
 
 Every successful on-screen task is recorded with the app it ran in, a signature of each screen, and the exact element that was tapped (label, class, centre coordinates). The next time, the task is **replayed without model calls**: it continues the moment the screen looks as recorded, taps the same element (found live, falling back to the recorded coordinates) and confirms it ended on the recorded screen. If anything differs it falls back to the model. Whole requests that worked are also remembered as routines, so repeating them skips planning as well. "open <app>" never needs a model.
 
+Workflows that type one piece of text are learned as **templates**: "open YouTube and search for cats videos" is stored with "cats videos" as a slot. Asking for "search dogs on YouTube" or "on youtube search for slippers" reuses the exact same taps with the new words typed in, no model call for either the routing or the on-screen steps.
+
 ### Memory, preferences, skills
 
 * **Memory** - `memory.md` in the app's private storage. The agent learns durable facts from conversation ("remember that...", or automatically), and you can view, edit and delete them.
@@ -50,15 +52,23 @@ Every successful on-screen task is recorded with the app it ran in, a signature 
 
 ### Scheduled tasks
 
-Create tasks in the Schedules screen or just say it in Auto mode ("every weekday at 8 check the weather"). Each schedule can use its own model, run in Auto or Plan & Execute, and runs unattended unless you turn on "Ask before sensitive steps". An exact alarm wakes the screen, and if PrivateAgent may draw over other apps it starts the task by itself; otherwise tap the notification. A PIN/pattern lock still blocks driving other apps until you unlock. The result is reported in a notification.
+Create tasks in the Schedules screen or just say it in Auto mode ("every weekday at 8 check the weather"). Each schedule can use its own model, run in Auto or Plan & Execute, and runs unattended unless you turn on "Ask before sensitive steps". An exact alarm wakes the screen. Because Android blocks apps from opening other apps while they're in the background, a scheduled task that needs to use tools (open an app, tap, type) needs PrivateAgent in front: grant "Display over other apps" (the Schedules screen prompts for this) so it can bring itself forward by itself; without it, tap the notification first. A PIN/pattern lock still blocks driving other apps until you unlock the phone. The result is reported in a notification.
 
 ### Accounts vault
 
 Logins are stored with the Android Keystore (`flutter_secure_storage`); if the Keystore is unavailable the app falls back to a private file. The model only ever sees an account *label*: passwords are typed into fields locally through a `type_credential` action. The API key uses the same store.
 
+### Faster and more efficient
+
+- Screens are read once per step instead of twice; fixed multi-second waits are replaced by a wait that ends as soon as the screen stops changing. Per-step verification is a model call and stays off by default.
+- The planner writes coarse steps ("search for cats on YouTube", not "tap the search icon"). If a step's result is already visible after a failure, the runner marks it done rather than retrying or re-planning.
+- "open Instagram" and anything else with no room for interpretation runs with no model call.
+- Stop is immediate: it aborts in-flight network requests directly, not just after they time out, and force-clears the UI a few seconds later if anything is still winding down.
+- The API key is kept in both encrypted storage and preferences, so it survives a Keystore reset and is never asked for again after Settings.
+
 ### Talk to the agent
 
-The call button opens a hands-free voice loop: you speak, the agent answers aloud (sentence by sentence while it is still writing) and does the task, then listens again. The call keeps running while other apps are open (a microphone foreground service with a Hang up notification), you can interrupt with "stop", and it ends when you say bye. Sensitive steps are confirmed by voice.
+The call button opens a hands-free voice loop with real voice-activity detection: it starts listening as soon as you speak and stops as soon as you go quiet (about a second of silence), rather than waiting out a fixed window either way. The agent answers aloud (sentence by sentence while it is still writing) and does the task, then listens again. The call keeps running while other apps are open (a microphone foreground service with a Hang up notification), you can interrupt with "stop", and it ends when you say bye. Sensitive steps are confirmed by voice.
 
 ### Custom provider
 
@@ -72,7 +82,18 @@ flutter test
 flutter build apk --release            # build/app/outputs/flutter-apk/app-release.apk
 ```
 
-Or run the **Android release artifacts** GitHub Action (Actions tab -> Run workflow); it runs the tests and publishes universal and per-ABI APKs. Release builds are signed with the debug key until you add your own signing config in `android/app/build.gradle.kts`.
+Or run the **Android release artifacts** GitHub Action (Actions tab -> Run workflow); it runs the tests and publishes universal and per-ABI APKs.
+
+**Signing.** Without a key, release builds fall back to the debug key, which is fine to try but cannot receive updates that survive reinstall. To sign properly: create `android/key.properties` (never commit it - it's gitignored) pointing at a keystore:
+
+```
+storePassword=...
+keyPassword=...
+keyAlias=...
+storeFile=release.jks   # placed in android/app/
+```
+
+`flutter build apk --release` then signs with it automatically. For the GitHub Action, add repo secrets `KEYSTORE_BASE64` (the keystore file, base64-encoded), `KEYSTORE_PASSWORD` and `KEY_ALIAS`; the workflow writes `key.properties` itself and the build picks it up. Skip the secrets and it still builds, debug-signed.
 
 ## Installation
 

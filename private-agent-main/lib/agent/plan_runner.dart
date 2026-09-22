@@ -4,6 +4,7 @@ import '../services/notification_service.dart';
 import '../services/task_executor.dart';
 import '../services/task_history_logger.dart';
 import 'agent_context.dart';
+import 'app_opener.dart';
 import 'json_utils.dart';
 import 'memory_service.dart';
 import 'plan.dart';
@@ -342,7 +343,9 @@ class PlanRunner {
           params: Map<String, dynamic>.from(step.params),
           response: '',
         );
-        final r = await ctx.actions.execute(action, aiService: ctx.ai);
+        final r = step.action == 'open_app'
+            ? await AppOpener.open(ctx.actions, ctx.ai, JsonUtils.str(step.params['app_name']))
+            : await ctx.actions.execute(action, aiService: ctx.ai);
         final details = (r.details ?? '').trim();
         final failed = !r.success || _failedText.hasMatch(details);
         if (!failed && (step.action == 'open_app' || step.action == 'open_url')) {

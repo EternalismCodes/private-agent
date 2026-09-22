@@ -31,6 +31,17 @@ jobs:
       - name: Run tests
         run: flutter test
 
+      - name: Set up release signing (optional)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/app/release.jks
+            printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release.jks\n' "$KEYSTORE_PASSWORD" "$KEYSTORE_PASSWORD" "$KEY_ALIAS" > android/key.properties
+          fi
+
       - name: Build universal APK
         run: |
           flutter build apk --release

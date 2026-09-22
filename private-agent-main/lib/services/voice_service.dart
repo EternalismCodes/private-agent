@@ -9,6 +9,7 @@ class VoiceService {
   bool _isInitialized = false;
   bool _isListening = false;
   Completer<String?>? _pendingListen;
+  void Function()? _engineStopped;
 
   bool get isListening => _isListening;
 
@@ -21,8 +22,10 @@ class VoiceService {
     _isInitialized = await _speech.initialize(
       onError: (error) {
         _isListening = false;
-        final pending = _pendingListen;
-        if (pending != null && !pending.isCompleted) pending.complete(null);
+        _engineStopped?.call();
+      },
+      onStatus: (status) {
+        if (status == 'done' || status == 'notListening') _engineStopped?.call();
       },
     );
 
@@ -58,11 +61,14 @@ class VoiceService {
     );
   }
 
-  /// Listens for a single utterance and returns the recognised text, or null
-  /// when nothing was heard / recognition failed. Used by the voice call.
+  /// Listens for one utterance with voice-activity endpointing: it waits for
+  /// the person to start talking, keeps listening while they talk (partial
+  /// results and sound level count as activity) and only stops after
+  /// [endSilence] of quiet. Returns the text, or null when nothing was said.
   Future<String?> listenOnce({
-    Duration listenFor = const Duration(seconds: 20),
-    Duration pauseFor = const Duration(seconds: 2),
+    Duration maxSpeech = const Duration(seconds: 30),
+    Duration endSilence = const Duration(milliseconds: 1200),
+    Duration noSpeechTimeout = const Duration(seconds: 8),
   }) async {
     if (!_isInitialized) await init();
     if (!_isInitialized) return null;
@@ -71,31 +77,62 @@ class VoiceService {
     final completer = Completer<String?>();
     _pendingListen = completer;
     _isListening = true;
+    final started = DateTime.now();
+    var lastWords = '';
+    var lastActivity = started;
+    var heardSpeech = false;
+
+    void finish() {
+      if (completer.isCompleted) return;
+      final text = lastWords.trim();
+      completer.complete(text.isEmpty ? null : text);
+    }
+
+    // Ignore status events fired while the recogniser is still starting.
+    _engineStopped = () {
+      if (DateTime.now().difference(started).inMilliseconds > 500) finish();
+    };
+
+    final ticker = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (completer.isCompleted) return;
+      final now = DateTime.now();
+      if (heardSpeech && now.difference(lastActivity) >= endSilence) {
+        finish();
+      } else if (!heardSpeech && now.difference(started) >= noSpeechTimeout) {
+        finish();
+      } else if (now.difference(started) >= maxSpeech) {
+        finish();
+      }
+    });
 
     try {
       await _speech.listen(
         onResult: (SpeechRecognitionResult result) {
-          if (result.finalResult && !completer.isCompleted) {
-            completer.complete(result.recognizedWords);
+          final words = result.recognizedWords;
+          if (words.trim().isNotEmpty) {
+            if (words != lastWords) lastActivity = DateTime.now();
+            lastWords = words;
+            heardSpeech = true;
           }
+          if (result.finalResult) finish();
         },
-        listenFor: listenFor,
-        pauseFor: pauseFor,
+        // Loud input keeps the turn open through short pauses in a sentence.
+        onSoundLevelChange: (double level) {
+          if (heardSpeech && level > 4) lastActivity = DateTime.now();
+        },
+        listenFor: maxSpeech + const Duration(seconds: 5),
         listenOptions: stt.SpeechListenOptions(
           listenMode: stt.ListenMode.dictation,
-          partialResults: false,
+          partialResults: true,
         ),
       );
     } catch (_) {
-      if (!completer.isCompleted) completer.complete(null);
+      finish();
     }
 
-    // Safety net in case the engine never reports a final result.
-    final guard = Timer(listenFor + const Duration(seconds: 4), () {
-      if (!completer.isCompleted) completer.complete(null);
-    });
     final text = await completer.future;
-    guard.cancel();
+    ticker.cancel();
+    _engineStopped = null;
     _isListening = false;
     _pendingListen = null;
     try {

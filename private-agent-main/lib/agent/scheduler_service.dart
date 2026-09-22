@@ -200,6 +200,22 @@ class SchedulerService {
     } catch (_) {}
   }
 
+  /// "Display over other apps": lets a scheduled task launch PrivateAgent and
+  /// other apps from the background.
+  Future<bool> canDrawOverlays() async {
+    try {
+      return await _channel.invokeMethod<bool>('canDrawOverlays') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> openOverlaySettings() async {
+    try {
+      await _channel.invokeMethod('openOverlaySettings');
+    } catch (_) {}
+  }
+
   /// Registers every enabled task with Android again (call at app start).
   Future<void> syncAlarms() async {
     await load();

@@ -113,26 +113,24 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
 
-    // The API key lives in encrypted storage (Android Keystore). Keys saved by
-    // older versions in SharedPreferences are migrated on first launch.
+    // The key is kept in encrypted storage AND in preferences. Keystore data
+    // can become unreadable (app updates, backups, some vendor ROMs); the
+    // preference copy guarantees the key never has to be typed in again.
+    final prefKey = prefs.getString('api_key');
     String? storedKey;
     try {
       storedKey = await SecretStore.instance.read('api_key');
     } catch (_) {}
-    final legacyKey = prefs.getString('api_key');
-    if (storedKey != null && storedKey.isNotEmpty) {
+    if (prefKey != null && prefKey.isNotEmpty) {
+      _apiKey = prefKey;
+      if (storedKey == null || storedKey.isEmpty) {
+        await SecretStore.instance.write('api_key', prefKey);
+      }
+    } else if (storedKey != null && storedKey.isNotEmpty) {
       _apiKey = storedKey;
-      if (legacyKey != null && !SecretStore.instance.usingFallback) {
-        await prefs.remove('api_key');
-      }
+      await prefs.setString('api_key', storedKey);
     } else {
-      _apiKey = legacyKey;
-      if (legacyKey != null && legacyKey.isNotEmpty) {
-        final stored = await SecretStore.instance.write('api_key', legacyKey);
-        if (stored && !SecretStore.instance.usingFallback) {
-          await prefs.remove('api_key');
-        }
-      }
+      _apiKey = null;
     }
     _baseUrl = prefs.getString('api_base_url') ?? _defaultBaseUrl;
     _model = prefs.getString('api_model') ?? _defaultModel;
@@ -158,13 +156,8 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
     }
 
     _apiKey = cleanApiKey;
-    final stored = await SecretStore.instance.write('api_key', cleanApiKey);
-    if (stored && !SecretStore.instance.usingFallback) {
-      await prefs.remove('api_key');
-    } else {
-      // Keystore unavailable: keep working with the plain preference.
-      await prefs.setString('api_key', cleanApiKey);
-    }
+    await prefs.setString('api_key', cleanApiKey);
+    await SecretStore.instance.write('api_key', cleanApiKey);
 
     if (baseUrl != null && baseUrl.isNotEmpty) {
       _baseUrl = baseUrl;
@@ -295,7 +288,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
             },
             body: requestBody,
           )
-          .timeout(const Duration(minutes: 30));
+          .timeout(const Duration(minutes: 3));
 
       developer.log(
         'API Response [${response.statusCode}]: ${response.body}',
@@ -403,7 +396,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
 
       final response = await client
           .send(request)
-          .timeout(const Duration(minutes: 30));
+          .timeout(const Duration(minutes: 3));
 
       if (response.statusCode != 200) {
         final body = await response.stream.bytesToString();
@@ -542,7 +535,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
                 'max_tokens': _effectiveMaxTokens,
               }),
             )
-            .timeout(const Duration(minutes: 30));
+            .timeout(const Duration(minutes: 3));
 
         if (response.statusCode != 200) {
           String errorMessage = response.body;

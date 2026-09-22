@@ -352,7 +352,9 @@ class ScreenAutomationService {
   /// Get current foreground app package name
   Future<String?> getCurrentPackage() async {
     try {
-      return await _channel.invokeMethod<String>('getCurrentPackage');
+      return await _channel
+          .invokeMethod<String>('getCurrentPackage')
+          .timeout(const Duration(seconds: 6));
     } catch (e) {
       return null;
     }

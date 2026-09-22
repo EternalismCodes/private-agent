@@ -16,10 +16,25 @@ class LlmDelta {
 /// user configured in [AiService] (Base URL + API key + model).
 ///
 /// It deliberately does not touch [AiService]'s own conversation state so the
-/// original phone-control loop keeps working exactly as before.
+/// original phone-control loop keeps working exactly as before. Every request
+/// can be aborted instantly with [abortAll] (the Stop button).
 class LlmClient {
   final AiService ai;
   LlmClient(this.ai);
+
+  static int _epoch = 0;
+  static final Set<http.Client> _open = <http.Client>{};
+
+  /// Cancels every request that is in flight and makes older ones fail fast.
+  static void abortAll() {
+    _epoch++;
+    for (final c in List<http.Client>.from(_open)) {
+      try {
+        c.close();
+      } catch (_) {}
+    }
+    _open.clear();
+  }
 
   static String endpoint(String baseUrl) {
     final u = baseUrl.trim();
@@ -64,6 +79,8 @@ class LlmClient {
     }
   }
 
+  static Exception _cancelled() => Exception('Cancelled');
+
   /// Single, non-streamed completion. Retries transient failures.
   Future<AiResponse> complete(
     List<Map<String, String>> messages, {
@@ -72,11 +89,15 @@ class LlmClient {
     int retries = 2,
   }) async {
     _requireKey();
+    final epoch = _epoch;
     var attempt = 0;
     while (true) {
       attempt++;
+      if (_epoch != epoch) throw _cancelled();
+      final client = http.Client();
+      _open.add(client);
       try {
-        final response = await http
+        final response = await client
             .post(
               Uri.parse(endpoint(ai.baseUrl)),
               headers: _headers,
@@ -87,7 +108,7 @@ class LlmClient {
                 'max_tokens': _tokens(maxTokens),
               }),
             )
-            .timeout(const Duration(minutes: 4));
+            .timeout(const Duration(minutes: 2));
 
         if (response.statusCode != 200) {
           final msg = _errorMessage(response.body);
@@ -118,13 +139,16 @@ class LlmClient {
         }
         return AiResponse(content, tokens);
       } on TimeoutException {
+        if (_epoch != epoch) throw _cancelled();
         if (attempt <= retries) continue;
         throw Exception('The model took too long to respond.');
       } catch (e) {
-        if (e.toString().contains('API error') ||
-            e.toString().contains('API Key') ||
-            e.toString().contains('empty answer') ||
-            e.toString().contains('Unexpected API response')) {
+        if (_epoch != epoch) throw _cancelled();
+        final text = e.toString();
+        if (text.contains('API error') ||
+            text.contains('API Key') ||
+            text.contains('empty answer') ||
+            text.contains('Unexpected API response')) {
           rethrow;
         }
         if (attempt <= retries) {
@@ -133,6 +157,9 @@ class LlmClient {
           continue;
         }
         throw Exception('Network error: $e');
+      } finally {
+        _open.remove(client);
+        client.close();
       }
     }
   }
@@ -145,7 +172,9 @@ class LlmClient {
     int? maxTokens,
   }) async* {
     _requireKey();
+    final epoch = _epoch;
     final client = http.Client();
+    _open.add(client);
     try {
       final request = http.Request('POST', Uri.parse(endpoint(ai.baseUrl)));
       request.headers.addAll(_headers);
@@ -157,7 +186,13 @@ class LlmClient {
         'stream': true,
       });
 
-      final response = await client.send(request).timeout(const Duration(minutes: 2));
+      final http.StreamedResponse response;
+      try {
+        response = await client.send(request).timeout(const Duration(seconds: 90));
+      } catch (e) {
+        if (_epoch != epoch) throw _cancelled();
+        rethrow;
+      }
       if (response.statusCode != 200) {
         final body = await response.stream.bytesToString();
         throw Exception('API error (${response.statusCode}): ${_errorMessage(body)}');
@@ -165,6 +200,7 @@ class LlmClient {
 
       final lines = response.stream.transform(utf8.decoder).transform(const LineSplitter());
       await for (final line in lines) {
+        if (_epoch != epoch) throw _cancelled();
         final trimmed = line.trim();
         if (!trimmed.startsWith('data:')) continue;
         final payload = trimmed.substring(5).trim();
@@ -191,7 +227,11 @@ class LlmClient {
           // Ignore partial / non-JSON keep-alive lines.
         }
       }
+    } catch (e) {
+      if (_epoch != epoch) throw _cancelled();
+      rethrow;
     } finally {
+      _open.remove(client);
       client.close();
     }
   }
