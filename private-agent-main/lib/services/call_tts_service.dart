@@ -4,17 +4,18 @@ import 'package:http/http.dart' as http;
 import 'audio_playback.dart';
 import 'voice_service.dart';
 
-/// Speaks call replies, preferring a more natural voice when one is set up.
+/// Speaks call replies, preferring a more natural voice when one is
+/// available.
 ///
-/// When a Piper-compatible HTTP TTS server is configured, its audio is used;
-/// otherwise (and whenever the server fails) this falls back to the on-device
-/// system voice, so a call is never left silent.
-///
-/// Server contract — matches Piper's own reference `http_server.py`: the
-/// utterance is POSTed as the raw request body (`text/plain`) to [endpoint];
-/// any 200 response is treated as a WAV clip and played. A self-hosted Piper
-/// server started with `python3 http_server.py --model <voice>.onnx` speaks
-/// this out of the box; point [endpoint] at `http://<host>:<port>/`.
+/// [system] (VoiceService) already prefers the bundled on-device neural
+/// voice (Piper via sherpa-onnx — no server, no network call) and falls
+/// back to the phone's system voice on its own, so that's what this uses by
+/// default. If [endpoint] is set, it's an escape hatch for anyone who wants
+/// to point at their own self-hosted Piper HTTP server (matching Piper's
+/// own reference `http_server.py`: the utterance is POSTed as the raw
+/// request body to [endpoint] and any 200 response is treated as a WAV
+/// clip) instead of the bundled voice — but this is entirely optional now,
+/// nothing needs to be running for calls to have a natural voice.
 class CallTtsService {
   final VoiceService system;
   String endpoint;
@@ -26,10 +27,14 @@ class CallTtsService {
   Future<void> speak(String text, {double systemRate = 0.58}) async {
     final clean = text.trim();
     if (clean.isEmpty) return;
+
     if (!usingExternalVoice) {
+      // system.speakAndWait already tries the on-device neural voice first
+      // and only falls back to the OS voice if that isn't set up.
       await system.speakAndWait(clean, rate: systemRate);
       return;
     }
+
     try {
       final response = await http
           .post(
@@ -43,7 +48,7 @@ class CallTtsService {
         if (played) return;
       }
     } catch (_) {
-      // Fall through to the system voice below.
+      // Fall through to the on-device/system voice below.
     }
     await system.speakAndWait(clean, rate: systemRate);
   }

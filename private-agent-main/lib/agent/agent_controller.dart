@@ -15,6 +15,7 @@ import 'llm_client.dart';
 import 'plan_cache.dart';
 import 'plan_runner.dart';
 import 'planner.dart';
+import 'quick_link.dart';
 import 'scheduler_service.dart';
 
 /// Callbacks through which the controller talks to whatever screen hosts it
@@ -153,6 +154,10 @@ class AgentController {
       if (mode == AgentMode.auto || mode == AgentMode.planExecute) {
         final local = await _tryLocalIntent(text, ui);
         if (local != null) return local;
+        // "search X on youtube/facebook/instagram": build the link and open
+        // it straight away, no model call and no screen-automation loop.
+        final quickLink = await _tryQuickLink(text, ui);
+        if (quickLink != null) return quickLink;
         // A user-authored skill whose name or trigger phrase was actually
         // said runs directly — this is what makes a skill you just created
         // usable everywhere (chat, Auto, calls) without depending on the
@@ -509,7 +514,8 @@ RULES:
 - If a request has several steps ("open X and do Y"), use execute_task or plan_and_execute, never open_app.
 - Prefer execute_task (one app, one flow) and use plan_and_execute only when the job truly spans several different apps. Both are slower when they are used unnecessarily.
 - Ask a short clarifying question in plain text instead of guessing when a required detail (who, what, when) is missing.
-- Do not claim you did something unless you used an action.''';
+- Do not claim you did something unless you used an action.
+- When the request needs something WRITTEN (a message, reply, caption, summary, explanation...) as part of a device action, write the actual, complete content yourself and put it in the goal — do not shorten it to the topic words. "send mom information about how AI is useful on WhatsApp" is not the goal "send mom info about how AI is useful"; the goal must contain the full message you composed, e.g. execute_task {"goal": "Open WhatsApp, open the chat with Mom, and send this message: \\"AI is useful because it can...\\" [your full composed message]"}. The step that actually types the message (later, inside execute_task) will only have your composed text to work with — if you don't write it here, it never gets written.''';
 
   static const String _voiceAddendum = '''
 \nVOICE CALL: the user is talking to you on a hands-free voice call and hears your replies. Answer in one or two short spoken sentences: no markdown, lists, emojis or links. When the user says goodbye or signals they are finished (bye, that's all, hang up, talk later, thanks that's it), reply with ONLY {"action": "end_call", "params": {}, "response": "a short goodbye"}. Never end the call otherwise.''';
@@ -662,6 +668,33 @@ RULES:
       askConfirmation: false,
       mode: mode.id,
     );
+  }
+
+  /// "search X on youtube/facebook/instagram": builds the link and opens it
+  /// straight away — no model call, no screen automation. See [QuickLink]
+  /// for exactly what counts as a plain search request; anything else (a
+  /// message, a post, a like...) returns null here and falls through to the
+  /// normal path below, which thinks it through as usual.
+  Future<AgentTurnResult?> _tryQuickLink(String text, AgentUi ui) async {
+    final url = QuickLink.build(text);
+    if (url == null) return null;
+
+    final result = await ctx.actions.execute(
+      AgentAction(action: 'open_url', params: {'url': url}, response: ''),
+    );
+    final details = (result.details ?? '').trim().toLowerCase();
+    if (!result.success || details.startsWith('error') || details.startsWith('cannot')) {
+      return null; // let the model work it out instead
+    }
+
+    final reply = 'Here you go: $url';
+    _history.add({'role': 'user', 'content': text});
+    _history.add({'role': 'assistant', 'content': reply});
+    _trimHistory();
+    ui.addMessage(
+      ChatMessage(role: 'assistant', content: reply, actionResult: result, mode: AgentMode.auto.id),
+    );
+    return AgentTurnResult(reply: reply, usedDevice: true, speak: true);
   }
 
   /// "open Instagram": opens the app straight away, no model call.

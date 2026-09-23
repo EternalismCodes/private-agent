@@ -2,10 +2,13 @@ import 'dart:async';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'audio_playback.dart';
+import 'local_tts_service.dart';
 
 class VoiceService {
   final stt.SpeechToText _speech = stt.SpeechToText();
   final FlutterTts _tts = FlutterTts();
+  final LocalTtsService _localTts = LocalTtsService.instance;
   bool _isInitialized = false;
   bool _isListening = false;
   Completer<String?>? _pendingListen;
@@ -179,13 +182,19 @@ class VoiceService {
     }
   }
 
-  /// Speaks [text] and completes when the speech has finished.
+  /// Speaks [text] and completes when the speech has finished. Prefers the
+  /// bundled on-device neural voice (Piper via sherpa-onnx) when it's set
+  /// up — no server, no network call, and noticeably more natural than the
+  /// phone's default voice — and falls back to the system voice otherwise.
   Future<void> speakAndWait(String text, {double? rate}) async {
-    if (text.trim().isEmpty) return;
+    final clean = text.trim();
+    if (clean.isEmpty) return;
+    final localWav = await _localTts.synthesizeToWav(clean);
+    if (localWav != null && await AudioPlayback.playAndWait(localWav)) return;
     try {
       if (rate != null) await _tts.setSpeechRate(rate);
       await _tts.awaitSpeakCompletion(true);
-      await _tts.speak(text);
+      await _tts.speak(clean);
     } catch (_) {}
   }
 
@@ -197,15 +206,22 @@ class VoiceService {
     await _speech.stop();
   }
 
-  /// Speak text aloud
+  /// Speak text aloud (fire-and-forget). Prefers the on-device neural
+  /// voice; see [speakAndWait].
   Future<void> speak(String text) async {
     if (text.isEmpty) return;
+    final localWav = await _localTts.synthesizeToWav(text);
+    if (localWav != null) {
+      final played = await AudioPlayback.playAndWait(localWav);
+      if (played) return;
+    }
     await _tts.speak(text);
   }
 
   /// Stop speaking
   Future<void> stopSpeaking() async {
     await _tts.stop();
+    await AudioPlayback.stop();
   }
 
   void dispose() {

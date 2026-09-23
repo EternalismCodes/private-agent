@@ -119,6 +119,8 @@ Rules:
 - You will receive a TEXT DUMP of the accessibility tree containing exact text strings and center coordinates.
 - ALWAYS use the text dump to decide your next action.
 - If you need to click something, prefer using `click_text`. If the element does not have text, use `click_at` with the coordinates provided in the text dump.
+- When the TASK asks you to write or send something WRITTEN (a message, reply, caption, summary, explanation, description, review...) rather than just search for or navigate to something, the `text` you put in type_text must be that actual finished writing — real sentences that fulfil the request — not the topic words from the task copied verbatim. For example, if the task is "send mom information about how AI is useful", typing "how AI is useful" is wrong: compose a few real, informative sentences about how AI is useful and type those. Write the whole thing in one type_text step before submitting/sending it.
+- When typing in a search box (as opposed to composing a message), type the short search terms as usual — this rule is only about fields meant to hold real written content.
 - When typing in a search box, you MUST click it first, wait a step, and THEN type.
 - After typing a search query, use `press_enter` once. If the screen does not change, click the exact visible suggestion text. Do not repeat the same submit action more than twice.
 - Never scroll or swipe more than three times in a row. After three scrolls, choose the best visible result or take a different action instead of continuing to browse indefinitely.
