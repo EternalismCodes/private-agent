@@ -130,20 +130,8 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
       _lastNotification = text;
       CallBackground.update(text);
     }
-    if (_overlayShown) {
-      final phaseName = switch (phase) {
-        CallPhase.thinking => 'thinking',
-        CallPhase.acting => 'acting',
-        CallPhase.speaking => 'speaking',
-        _ => 'listening',
-      };
-      final detail = phase == CallPhase.acting ? _progress : '';
-      unawaited(
-        FlutterOverlayWindow.shareData('STATUS|$phaseName|$detail')
-            .timeout(const Duration(seconds: 2))
-            .catchError((Object _) {}),
-      );
-    }
+    // The notification already updates via CallBackground.update() above;
+    // the overlay (if shown) will automatically reflect the new notification text.
   }
 
   /// Shows the small status pill over other apps, if the person has it
@@ -163,11 +151,10 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
       }
       if (!granted || !_active) return;
 
-      await prefs.setString('overlay_mode', 'call_status');
       if (!await FlutterOverlayWindow.isActive()) {
         await FlutterOverlayWindow.showOverlay(
           height: 46,
-          width: 240,
+          width: 280,
           alignment: OverlayAlignment.topCenter,
           flag: OverlayFlag.clickThrough,
           enableDrag: false,
@@ -346,9 +333,10 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
   void _hangUp() {
     _active = false;
     widget.controller.cancel();
-    widget.voice.stopListening();
-    _tts.stop();
-    _finish();
+    // Don't call _finish() here — the main loop already does it in a finally block.
+    // Just flag that the call is no longer active; the loop will exit and
+    // finish() will be called once. If we call it twice, we get double-
+    // cleanup and sometimes get stuck on screen.
   }
 
   String get _label {

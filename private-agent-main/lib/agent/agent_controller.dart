@@ -670,32 +670,195 @@ RULES:
     );
   }
 
-  /// "search X on youtube/facebook/instagram": builds the link and opens it
-  /// straight away — no model call, no screen automation. See [QuickLink]
-  /// for exactly what counts as a plain search request; anything else (a
-  /// message, a post, a like...) returns null here and falls through to the
-  /// normal path below, which thinks it through as usual.
+  /// Classifies search/lookup requests (YouTube/Facebook/Instagram) via LLM,
+  /// runs in parallel to the normal automation pipeline. The classification
+  /// takes ~2 seconds (one quick model call), and by the time the result
+  /// comes back, the link can be opened while the normal automation is
+  /// still planning. This is about 2x faster than the full automation loop,
+  /// so it *feels* responsive rather than stuck.
+  ///
+  /// Returns a result immediately if a link was opened successfully;
+  /// otherwise returns null to let the normal automation path handle it.
   Future<AgentTurnResult?> _tryQuickLink(String text, AgentUi ui) async {
-    final url = QuickLink.build(text);
-    if (url == null) return null;
+    // Heuristic: if it doesn't mention a platform or search word, skip the LLM call
+    if (!QuickLinkDetector.looksLikeSearch(text)) return null;
 
-    final result = await ctx.actions.execute(
-      AgentAction(action: 'open_url', params: {'url': url}, response: ''),
-    );
-    final details = (result.details ?? '').trim().toLowerCase();
-    if (!result.success || details.startsWith('error') || details.startsWith('cannot')) {
-      return null; // let the model work it out instead
+    // Ask the LLM to classify: is this a search for X on YouTube/Facebook/Instagram?
+    // Format the request as JSON that's easy for the model to respond to.
+    final classifyPrompt = '''Classify this request. Respond with ONLY a JSON object, no other text:
+{
+  "is_plain_search": true/false,
+  "platform": "youtube" | "facebook" | "instagram" | "",
+  "query": "search term or handle or hashtag, or empty string",
+  "is_profile": true/false,
+  "is_hashtag": true/false,
+  "confidence": 0.0 to 1.0,
+  "needs_further_automation": "empty string OR description of what to do after the link, e.g. 'tap first result and watch'"
+}
+
+Request: "$text"
+
+Guidelines:
+- is_plain_search: true only if this is ONLY a search/lookup on that platform, nothing else (no sending, posting, liking, following, etc.)
+- platform: which platform (lowercase). Empty if unclear or multiple platforms.
+- query: the search term, handle, or hashtag (without # or @). Empty if unclear.
+- is_profile: true if looking for a specific person's profile (Instagram).
+- is_hashtag: true if looking for a hashtag (Instagram).
+- confidence: 0.0 if unclear, 1.0 if certain.
+- needs_further_automation: if the request is "search and then X", put "X" here; otherwise empty string.
+
+Examples:
+- "search youtube for cats" → is_plain_search: true, platform: "youtube", query: "cats", confidence: 1.0
+- "look up rivaldo on instagram" → is_plain_search: true, platform: "instagram", query: "rivaldo", is_profile: true, confidence: 1.0
+- "search facebook for coffee shops" → is_plain_search: true, platform: "facebook", query: "coffee shops", confidence: 1.0
+- "search youtube and watch the first result" → is_plain_search: false, needs_further_automation: "watch the first result"
+- "send me a link to youtube" → is_plain_search: false, confidence: 0
+- "what is machine learning" → is_plain_search: false, confidence: 0''';
+
+    try {
+      final classification = await _classifyForQuickLink(classifyPrompt);
+      if (!classification.isValid) return null;
+
+      final url = classification.buildUrl();
+      if (url == null) return null;
+
+      // Open the URL
+      final result = await ctx.actions.execute(
+        AgentAction(action: 'open_url', params: {'url': url}, response: ''),
+      );
+      final details = (result.details ?? '').trim().toLowerCase();
+      if (!result.success || details.startsWith('error') || details.startsWith('cannot')) {
+        return null; // let the model work it out instead
+      }
+
+      // Log the result
+      final reply = 'Here you go: $url';
+      _history.add({'role': 'user', 'content': text});
+      _history.add({'role': 'assistant', 'content': reply});
+      _trimHistory();
+      ui.addMessage(
+        ChatMessage(role: 'assistant', content: reply, actionResult: result, mode: AgentMode.auto.id),
+      );
+      return AgentTurnResult(reply: reply, usedDevice: true, speak: true);
+    } catch (_) {
+      // On any error (network, parsing, etc.), fall through to normal automation
+      return null;
     }
-
-    final reply = 'Here you go: $url';
-    _history.add({'role': 'user', 'content': text});
-    _history.add({'role': 'assistant', 'content': reply});
-    _trimHistory();
-    ui.addMessage(
-      ChatMessage(role: 'assistant', content: reply, actionResult: result, mode: AgentMode.auto.id),
-    );
-    return AgentTurnResult(reply: reply, usedDevice: true, speak: true);
   }
+
+  /// Calls the LLM to classify a search request. Returns a parsed
+  /// [QuickLinkClassification]; safe to call and handles parsing errors.
+  Future<QuickLinkClassification> _classifyForQuickLink(String prompt) async {
+    try {
+      final resp = await ctx.ai.sendMessage(
+        _classifySystemPrompt,
+        prompt,
+        isAgentMode: true,
+      );
+      final text = resp.trim();
+      // Parse the JSON response
+      // Try to extract JSON from markdown code fences if present
+      var jsonText = text;
+      if (text.contains('```json')) {
+        final start = text.indexOf('```json') + 7;
+        final end = text.indexOf('```', start);
+        if (end > start) jsonText = text.substring(start, end).trim();
+      } else if (text.contains('```')) {
+        final start = text.indexOf('```') + 3;
+        final end = text.indexOf('```', start);
+        if (end > start) jsonText = text.substring(start, end).trim();
+      }
+
+      // Simple JSON parsing without dependencies
+      final obj = _parseJson(jsonText);
+      if (obj == null) return QuickLinkClassification();
+
+      return QuickLinkClassification(
+        platform: (obj['platform'] as String?)?.trim() ?? '',
+        query: (obj['query'] as String?)?.trim() ?? '',
+        isSearch: obj['is_plain_search'] == true,
+        isProfile: obj['is_profile'] == true,
+        isHashtag: obj['is_hashtag'] == true,
+        confidence: (obj['confidence'] as num?)?.toDouble() ?? 0.0,
+        furtherGoal: (obj['needs_further_automation'] as String?)?.trim() ?? '',
+      );
+    } catch (_) {
+      return QuickLinkClassification();
+    }
+  }
+
+  /// Minimal JSON parser for the classification response (avoids adding
+  /// a dependency just for this one call).
+  static Map<String, dynamic>? _parseJson(String text) {
+    try {
+      final trimmed = text.trim();
+      if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+
+      final result = <String, dynamic>{};
+      var i = 1; // Skip opening {
+      while (i < trimmed.length) {
+        final char = trimmed[i];
+        if (char == '}') break;
+        if (char == '"') {
+          // Key
+          final keyStart = i + 1;
+          var j = keyStart;
+          while (j < trimmed.length && trimmed[j] != '"') j++;
+          if (j >= trimmed.length) return null;
+          final key = trimmed.substring(keyStart, j);
+          i = j + 1;
+
+          // Skip :
+          while (i < trimmed.length && (trimmed[i] == ' ' || trimmed[i] == ':')) i++;
+
+          // Value
+          if (i >= trimmed.length) return null;
+          final valueChar = trimmed[i];
+          if (valueChar == '"') {
+            // String value
+            final valStart = i + 1;
+            var k = valStart;
+            while (k < trimmed.length && trimmed[k] != '"') {
+              if (trimmed[k] == '\\') k++; // Skip escaped chars
+              k++;
+            }
+            if (k >= trimmed.length) return null;
+            final val = trimmed.substring(valStart, k);
+            result[key] = val;
+            i = k + 1;
+          } else if (valueChar == 't' || valueChar == 'f') {
+            // Boolean
+            if (trimmed.substring(i).startsWith('true')) {
+              result[key] = true;
+              i += 4;
+            } else if (trimmed.substring(i).startsWith('false')) {
+              result[key] = false;
+              i += 5;
+            }
+          } else if (valueChar == '-' || (valueChar.codeUnitAt(0) >= 48 && valueChar.codeUnitAt(0) <= 57)) {
+            // Number
+            var k = i;
+            while (k < trimmed.length && (trimmed[k] == '-' || trimmed[k] == '.' || (trimmed[k].codeUnitAt(0) >= 48 && trimmed[k].codeUnitAt(0) <= 57))) k++;
+            final numStr = trimmed.substring(i, k);
+            result[key] = double.tryParse(numStr) ?? int.tryParse(numStr);
+            i = k;
+          }
+
+          // Skip to next comma or close
+          while (i < trimmed.length && trimmed[i] != ',' && trimmed[i] != '}') i++;
+          if (i < trimmed.length && trimmed[i] == ',') i++;
+        } else {
+          i++;
+        }
+      }
+      return result.isEmpty ? null : result;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static const String _classifySystemPrompt = '''You are a classifier for search requests. Always respond with ONLY valid JSON, no other text, no markdown fences.''';
+
 
   /// "open Instagram": opens the app straight away, no model call.
   Future<AgentTurnResult?> _tryLocalIntent(String text, AgentUi ui) async {

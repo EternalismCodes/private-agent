@@ -121,8 +121,12 @@ class CallService : Service() {
             .setContentTitle("PrivateAgent call")
             .setContentText(text)
             .setOngoing(true)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setSubText("Listening…")
             .setContentIntent(open)
             .addAction(action)
+            .setShowWhen(true)
+            .setUsesChronometer(true)
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
