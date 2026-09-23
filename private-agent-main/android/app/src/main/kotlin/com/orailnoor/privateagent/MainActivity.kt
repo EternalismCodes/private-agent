@@ -67,6 +67,8 @@ class MainActivity : FlutterActivity() {
         registerAccessibilityChannel(flutterEngine, this)
         SchedulerBridge.register(flutterEngine, applicationContext)
         CallBridge.register(flutterEngine, this)
+        TelegramBridge.register(flutterEngine, this)
+        AudioPlaybackBridge.register(flutterEngine, applicationContext)
     }
 
     companion object {

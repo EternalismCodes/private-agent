@@ -64,6 +64,11 @@ object SchedulerBridge {
                         }
                         result.success(true)
                     }
+                    "wakeForRemote" -> {
+                        val goal = call.argument<String>("goal") ?: ""
+                        wakeAndLaunch(appContext, "telegram", goal)
+                        result.success(true)
+                    }
                     "canDrawOverlays" -> result.success(Settings.canDrawOverlays(appContext))
                     "openOverlaySettings" -> {
                         val intent = Intent(

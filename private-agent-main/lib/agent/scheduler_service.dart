@@ -180,6 +180,15 @@ class SchedulerService {
     }
   }
 
+  /// Wakes the screen and, if the overlay permission is granted, brings
+  /// PrivateAgent forward so a remote command (Telegram) can actually reach
+  /// the screen. Safe to call unconditionally — a no-op without permission.
+  Future<void> wakeForRemote(String goal) async {
+    try {
+      await _channel.invokeMethod('wakeForRemote', {'goal': goal});
+    } catch (_) {}
+  }
+
   Future<void> _nativeDismiss(String id) async {
     try {
       await _channel.invokeMethod('dismiss', {'id': id});

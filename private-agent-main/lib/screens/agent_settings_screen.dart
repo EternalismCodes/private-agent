@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import '../agent/agent_mode.dart';
 import '../agent/prefs.dart';
 import '../widgets/screen_helpers.dart';
@@ -16,33 +17,45 @@ class _AgentSettingsScreenState extends State<AgentSettingsScreen> {
   final AgentPrefs _prefs = AgentPrefs.instance;
   late final TextEditingController _name;
   late final TextEditingController _instructions;
+  late final TextEditingController _callTtsUrl;
   bool _ready = false;
+  bool _overlayGranted = false;
 
   @override
   void initState() {
     super.initState();
     _name = TextEditingController();
     _instructions = TextEditingController();
+    _callTtsUrl = TextEditingController();
     _prefs.load().then((_) {
       if (!mounted) return;
       setState(() {
         _name.text = _prefs.userName;
         _instructions.text = _prefs.customInstructions;
+        _callTtsUrl.text = _prefs.callTtsUrl;
         _ready = true;
       });
     });
+    _refreshOverlayStatus();
+  }
+
+  Future<void> _refreshOverlayStatus() async {
+    final granted = await FlutterOverlayWindow.isPermissionGranted();
+    if (mounted) setState(() => _overlayGranted = granted);
   }
 
   @override
   void dispose() {
     _name.dispose();
     _instructions.dispose();
+    _callTtsUrl.dispose();
     super.dispose();
   }
 
   Future<void> _save() async {
     _prefs.userName = _name.text.trim();
     _prefs.customInstructions = _instructions.text.trim();
+    _prefs.callTtsUrl = _callTtsUrl.text.trim();
     await _prefs.save();
   }
 
@@ -133,6 +146,53 @@ class _AgentSettingsScreenState extends State<AgentSettingsScreen> {
             _prefs.speakReplies,
             (v) => _prefs.speakReplies = v,
           ),
+          const SectionLabel('Calls'),
+          _switch(
+            'Status bubble during calls',
+            'A small floating pill shows what the agent is doing — listening, thinking, controlling your phone — while other apps are open.',
+            _prefs.showCallOverlay,
+            (v) => _prefs.showCallOverlay = v,
+          ),
+          ListTile(
+            title: const Text(
+              'Display over other apps',
+              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5),
+            ),
+            subtitle: Text(
+              _overlayGranted
+                  ? 'Granted — the status bubble can show over other apps.'
+                  : 'Needed for the status bubble, and lets scheduled and remote (Telegram) tasks bring the app forward.',
+              style: const TextStyle(fontSize: 12.5, height: 1.35),
+            ),
+            trailing: _overlayGranted
+                ? const Icon(Icons.check_circle_rounded, color: Colors.green)
+                : TextButton(
+                    onPressed: () async {
+                      final granted = await FlutterOverlayWindow.requestPermission();
+                      if (mounted) setState(() => _overlayGranted = granted ?? false);
+                    },
+                    child: const Text('Grant'),
+                  ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: TextField(
+              controller: _callTtsUrl,
+              onChanged: (_) => _save(),
+              keyboardType: TextInputType.url,
+              autocorrect: false,
+              decoration: const InputDecoration(
+                labelText: 'Custom call voice server (optional)',
+                hintText: 'http://192.168.1.20:5000/',
+                helperText:
+                    'A self-hosted Piper HTTP server for a more natural call voice. Leave empty to use the system voice. '
+                    'Start one with: python3 http_server.py --model <voice>.onnx',
+                helperMaxLines: 3,
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
           const SectionLabel('Safety'),
           _switch(
             'Ask before sensitive steps',

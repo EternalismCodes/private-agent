@@ -69,9 +69,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _telegramService = TelegramService(_actionHandler, _aiService);
     _agentContext = AgentContext(ai: _aiService, actions: _actionHandler);
     _controller = AgentController(_agentContext);
+    _telegramService = TelegramService(_agentContext);
     _startScheduler();
     _initServices();
     _startOverlayHistorySync();

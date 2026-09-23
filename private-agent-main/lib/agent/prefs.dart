@@ -40,6 +40,14 @@ class AgentPrefs extends ChangeNotifier {
   /// How many times the plan may be rewritten after failures.
   int maxReplans = 2;
 
+  /// Optional Piper-compatible HTTP TTS server used only for calls
+  /// (`http://host:port/`, raw text in, WAV back). Empty = system voice.
+  String callTtsUrl = '';
+
+  /// Shows a small status pill (listening/thinking/controlling your phone)
+  /// over other apps while a call is active.
+  bool showCallOverlay = true;
+
   Future<void> load() async {
     if (_loaded) return;
     final p = await SharedPreferences.getInstance();
@@ -53,6 +61,8 @@ class AgentPrefs extends ChangeNotifier {
     allowCredentialFill = p.getBool('agent_allow_credentials') ?? true;
     maxRetries = p.getInt('agent_max_retries') ?? 1;
     maxReplans = p.getInt('agent_max_replans') ?? 2;
+    callTtsUrl = p.getString('agent_call_tts_url') ?? '';
+    showCallOverlay = p.getBool('agent_show_call_overlay') ?? true;
     _loaded = true;
   }
 
@@ -68,6 +78,8 @@ class AgentPrefs extends ChangeNotifier {
     await p.setBool('agent_allow_credentials', allowCredentialFill);
     await p.setInt('agent_max_retries', maxRetries);
     await p.setInt('agent_max_replans', maxReplans);
+    await p.setString('agent_call_tts_url', callTtsUrl);
+    await p.setBool('agent_show_call_overlay', showCallOverlay);
     notifyListeners();
   }
 }

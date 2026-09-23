@@ -19,6 +19,7 @@ class VoiceService {
   Future<void> init() async {
     if (_isInitialized) return;
 
+    unawaited(_preferNaturalVoice());
     _isInitialized = await _speech.initialize(
       onError: (error) {
         _isListening = false;
@@ -139,6 +140,43 @@ class VoiceService {
       await _speech.stop();
     } catch (_) {}
     return text;
+  }
+
+  /// Best-effort switch to a more natural-sounding installed voice (prefers
+  /// network/"neural"-style voices, e.g. Google's, over the terse offline
+  /// default). Silently does nothing if the engine doesn't expose voices.
+  Future<void> _preferNaturalVoice() async {
+    try {
+      final dynamic raw = await _tts.getVoices;
+      if (raw is! List) return;
+      Map? best;
+      var bestScore = -1;
+      for (final v in raw) {
+        if (v is! Map) continue;
+        final locale = (v['locale'] ?? '').toString().toLowerCase();
+        if (!locale.startsWith('en')) continue;
+        final name = (v['name'] ?? '').toString().toLowerCase();
+        var score = 0;
+        if (v['network'] == true) score += 3;
+        if (name.contains('wavenet') || name.contains('neural') || name.contains('studio')) {
+          score += 3;
+        }
+        if (name.contains('local')) score -= 1;
+        if (locale == 'en-us') score += 1;
+        if (score > bestScore) {
+          bestScore = score;
+          best = v;
+        }
+      }
+      if (best != null && bestScore > 0 && best['name'] != null) {
+        await _tts.setVoice({
+          'name': best['name'].toString(),
+          'locale': (best['locale'] ?? 'en-US').toString(),
+        });
+      }
+    } catch (_) {
+      // Not every engine/platform supports voice selection; system default stays.
+    }
   }
 
   /// Speaks [text] and completes when the speech has finished.

@@ -153,6 +153,12 @@ class AgentController {
       if (mode == AgentMode.auto || mode == AgentMode.planExecute) {
         final local = await _tryLocalIntent(text, ui);
         if (local != null) return local;
+        // A user-authored skill whose name or trigger phrase was actually
+        // said runs directly — this is what makes a skill you just created
+        // usable everywhere (chat, Auto, calls) without depending on the
+        // model choosing to call it.
+        final skillHit = await _tryUserSkill(text, mode, ui);
+        if (skillHit != null) return skillHit;
         final template = await _tryTemplate(text, mode, ui);
         if (template != null) return template;
       }
@@ -623,6 +629,25 @@ RULES:
     r'\b(and|then|in|on|to|for|with|from|at|inside|search|play|send|message|call)\b',
     caseSensitive: false,
   );
+
+  /// A skill the user (or the agent) saved whose name or trigger phrase is
+  /// literally in the request runs immediately, with its own instructions
+  /// handed to the planner — no model call to decide whether to use it.
+  Future<AgentTurnResult?> _tryUserSkill(String text, AgentMode mode, AgentUi ui) async {
+    final skill = ctx.skills.strongMatch(text);
+    if (skill == null) return null;
+    await ctx.skills.recordUse(skill.id);
+    _history.add({'role': 'user', 'content': text});
+    _trimHistory();
+    return _planAndExecute(
+      '$text (use the skill "${skill.name}": ${skill.instructions})',
+      'Using "${skill.name}"…',
+      ui,
+      mode: mode.id,
+      askConfirmation: false,
+      cacheKey: text,
+    );
+  }
 
   /// A request that matches a learned template ("search <x> on youtube")
   /// runs straight from the recorded taps with the new value, no model call.

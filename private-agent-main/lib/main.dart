@@ -6,13 +6,44 @@ import 'dart:developer';
 import 'config/feature_flags.dart';
 import 'screens/home_screen.dart';
 import 'screens/onboarding_screen.dart';
+import 'overlay_call_status.dart';
 import 'overlay_main.dart';
+
+/// Which widget the floating-overlay window (a separate Flutter engine/
+/// isolate) renders. Written by the main app right before it asks Android to
+/// show the overlay, read here on that isolate's startup.
+const String _overlayModeKey = 'overlay_mode';
 
 @pragma("vm:entry-point")
 void overlayMain() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(
-    MaterialApp(
+  runApp(const _OverlayRoot());
+}
+
+/// Picks the overlay's content once, at startup, then never changes it for
+/// the lifetime of this overlay window (a new window is shown for a new
+/// mode, so there is nothing to react to here).
+class _OverlayRoot extends StatefulWidget {
+  const _OverlayRoot();
+
+  @override
+  State<_OverlayRoot> createState() => _OverlayRootState();
+}
+
+class _OverlayRootState extends State<_OverlayRoot> {
+  String? _mode;
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((prefs) {
+      if (mounted) setState(() => _mode = prefs.getString(_overlayModeKey) ?? 'chat');
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         canvasColor: Colors.transparent,
@@ -32,9 +63,13 @@ void overlayMain() {
       builder: (context, child) {
         return Container(color: Colors.transparent, child: child);
       },
-      home: const OverlayApp(),
-    ),
-  );
+      home: switch (_mode) {
+        'call_status' => const CallStatusOverlay(),
+        null => const SizedBox.shrink(),
+        _ => const OverlayApp(),
+      },
+    );
+  }
 }
 
 final ValueNotifier<ThemeMode> themeNotifier = ValueNotifier(ThemeMode.system);

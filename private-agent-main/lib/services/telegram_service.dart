@@ -1,24 +1,53 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'action_handler.dart';
-import 'ai_service.dart';
+import '../agent/agent_context.dart';
+import '../agent/agent_controller.dart';
+import '../agent/agent_mode.dart';
+import '../models/chat_message.dart';
+import '../agent/scheduler_service.dart';
 
+/// Lets the phone be controlled remotely from a Telegram chat.
+///
+/// Messages are routed through the same [AgentController] the app itself
+/// uses (Auto mode, unattended), so Telegram gets everything the app does:
+/// multi-step tasks, learned workflows and templates, skills, memory and
+/// scheduling — not just the handful of one-shot device actions this used to
+/// be limited to.
+///
+/// Reliability: polling runs on a `Timer` in the main engine's Dart isolate,
+/// which Android will happily freeze once the app is backgrounded unless
+/// something keeps the process alive. A small foreground service (started
+/// here, see [TelegramBridge]) does exactly that for as long as the
+/// integration is enabled, so replies keep coming while the screen is off or
+/// another app is open — the entire point of a *remote* control channel.
 class TelegramService {
-  final ActionHandler _actionHandler;
-  final AiService _aiService;
-  
+  final AgentContext _ctx;
+  late final AgentController _controller = AgentController(_ctx);
+
   String _botToken = '';
   bool _isEnabled = false;
   int _lastUpdateId = 0;
   bool _isPolling = false;
   Timer? _pollingTimer;
+  String _activeChatId = '';
 
-  TelegramService(this._actionHandler, this._aiService);
+  /// Last few status lines, for a simple diagnostics view in Settings.
+  final List<String> log = [];
+  void Function()? onLog;
+
+  TelegramService(this._ctx);
 
   String get botToken => _botToken;
   bool get isEnabled => _isEnabled;
+
+  void _log(String line) {
+    log.insert(0, '${DateTime.now().toIso8601String().substring(11, 19)}  $line');
+    if (log.length > 30) log.removeRange(30, log.length);
+    onLog?.call();
+  }
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
@@ -45,14 +74,17 @@ class TelegramService {
   }
 
   void startPolling() {
+    TelegramBridge.start();
     if (_isPolling) return;
     _isPolling = true;
+    _log('Started listening for Telegram messages');
     _pollUpdates();
   }
 
   void stopPolling() {
     _isPolling = false;
     _pollingTimer?.cancel();
+    TelegramBridge.stop();
   }
 
   Future<void> _pollUpdates() async {
@@ -60,15 +92,17 @@ class TelegramService {
 
     try {
       final url = Uri.parse('https://api.telegram.org/bot$_botToken/getUpdates');
-      final response = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'offset': _lastUpdateId + 1,
-          'timeout': 30, // Long polling timeout
-          'allowed_updates': ['message'],
-        }),
-      );
+      final response = await http
+          .post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'offset': _lastUpdateId + 1,
+              'timeout': 25, // Long polling timeout, must stay under the client timeout below
+              'allowed_updates': ['message'],
+            }),
+          )
+          .timeout(const Duration(seconds: 35));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -77,74 +111,111 @@ class TelegramService {
           for (final update in results) {
             _lastUpdateId = update['update_id'];
             if (update['message'] != null && update['message']['text'] != null) {
-              final text = update['message']['text'];
+              final text = update['message']['text'] as String;
               final chatId = update['message']['chat']['id'];
-              
-              // Process message asynchronously so we don't block the polling loop
-              _handleIncomingMessage(chatId.toString(), text);
+              unawaited(_handleIncomingMessage(chatId.toString(), text));
             }
           }
+        } else {
+          _log('Telegram API error: ${data['description'] ?? data['error_code']}');
         }
+      } else if (response.statusCode == 401) {
+        _log('Bot token rejected (401) — check it in Settings');
+        stopPolling();
+        return;
+      } else {
+        _log('Telegram poll HTTP ${response.statusCode}');
       }
+    } on TimeoutException {
+      // Normal for long polling with nothing new; just poll again.
     } catch (e) {
-      print('Telegram polling error: $e');
+      _log('Telegram polling error: $e');
     }
 
     // Continue polling
     if (_isPolling) {
-      _pollingTimer = Timer(const Duration(seconds: 1), _pollUpdates);
+      _pollingTimer = Timer(const Duration(milliseconds: 800), _pollUpdates);
     }
   }
 
   Future<void> _handleIncomingMessage(String chatId, String text) async {
-    // Acknowledge receipt
-    await _sendMessage(chatId, '🤖 Received: "$text". Working on it...');
+    if (_controller.busy) {
+      await _sendMessage(chatId, '🤖 Still working on the previous request — try again in a moment.');
+      return;
+    }
+
+    await _sendMessage(chatId, '🤖 Got it: "$text". Working on it…');
+    _log('▶ $text');
+    _activeChatId = chatId;
+
+    // Wake the screen and, if allowed, bring the app forward — Android
+    // blocks a backgrounded app from opening other apps or driving the
+    // screen otherwise. Harmless no-op without the overlay permission.
+    await SchedulerService.instance.wakeForRemote(text);
+    await Future<void>.delayed(const Duration(milliseconds: 400));
 
     try {
-      // 1. Send text to AI
-      final aiResponse = await _aiService.sendMessage(text);
-      
-      // 2. Parse the action
-      final action = _aiService.parseAction(aiResponse);
-
-      if (action != null) {
-        // 3. Execute the action
-        final result = await _actionHandler.execute(
-          action,
-          aiService: _aiService,
-          onProgress: (msg) {
-            // Send progress updates back to telegram
-            _sendMessage(chatId, '⏳ $msg');
-          },
-        );
-        await _sendMessage(chatId, '✅ ${result.details ?? "Done"}');
-      } else {
-        // It's a plain text response
-        await _sendMessage(chatId, '💬 $aiResponse');
-      }
+      final result = await _controller.handle(text, AgentMode.auto, _telegramUi(chatId), unattended: true);
+      final prefix = result.success ? '✅' : '⚠️';
+      final reply = result.reply.trim().isEmpty ? 'Done.' : result.reply.trim();
+      await _sendMessage(chatId, '$prefix $reply');
+      _log('${result.success ? "✔" : "✘"} $text');
     } catch (e) {
-      await _sendMessage(chatId, '❌ Error: $e');
+      final message = e.toString().replaceFirst('Exception: ', '');
+      await _sendMessage(chatId, '❌ Error: $message');
+      _log('✘ $text — $message');
     }
   }
 
+  AgentUi _telegramUi(String chatId) => AgentUi(
+        // No chat UI to update; the controller just needs somewhere to write.
+        addMessage: (m) => m,
+        refresh: () {},
+        removeMessage: (m) {},
+        // Telegram runs unattended, so confirmStep is never actually invoked.
+        confirmStep: (step) async => true,
+        onProgress: (msg) {
+          if (chatId == _activeChatId) unawaited(_sendMessage(chatId, '⏳ $msg'));
+        },
+      );
+
   Future<void> _sendMessage(String chatId, String text) async {
     if (_botToken.isEmpty) return;
+    final trimmed = text.length > 3900 ? '${text.substring(0, 3900)}…' : text;
     try {
       final url = Uri.parse('https://api.telegram.org/bot$_botToken/sendMessage');
-      await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'chat_id': chatId,
-          'text': text,
-        }),
-      );
+      await http
+          .post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'chat_id': chatId, 'text': trimmed}),
+          )
+          .timeout(const Duration(seconds: 15));
     } catch (e) {
-      print('Failed to send telegram message: $e');
+      _log('Failed to send reply: $e');
     }
   }
 
   void dispose() {
     stopPolling();
+  }
+}
+
+/// Native side: a small foreground service that keeps this process (and so
+/// the Dart polling timer above) alive while Telegram is enabled.
+class TelegramBridge {
+  TelegramBridge._();
+  static const _channel = MethodChannel('com.privateagent/telegram_service');
+
+  static Future<void> start() async {
+    try {
+      await _channel.invokeMethod('start');
+    } catch (_) {}
+  }
+
+  static Future<void> stop() async {
+    try {
+      await _channel.invokeMethod('stop');
+    } catch (_) {}
   }
 }

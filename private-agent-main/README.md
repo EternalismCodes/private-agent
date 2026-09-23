@@ -68,7 +68,13 @@ Logins are stored with the Android Keystore (`flutter_secure_storage`); if the K
 
 ### Talk to the agent
 
-The call button opens a hands-free voice loop with real voice-activity detection: it starts listening as soon as you speak and stops as soon as you go quiet (about a second of silence), rather than waiting out a fixed window either way. The agent answers aloud (sentence by sentence while it is still writing) and does the task, then listens again. The call keeps running while other apps are open (a microphone foreground service with a Hang up notification), you can interrupt with "stop", and it ends when you say bye. Sensitive steps are confirmed by voice.
+The call button opens a hands-free voice loop with real voice-activity detection: it starts listening as soon as you speak and stops as soon as you go quiet (about a second of silence), rather than waiting out a fixed window either way. While the agent is thinking or controlling the phone the microphone is off — it never listens to itself, its own screen-automation, or picks up background noise mid-task — and it starts listening again once it has a reply. The agent answers aloud, sentence by sentence while it is still writing. It ends when you say bye, from a long silence, or the Hang up button/notification.
+
+The call keeps running while other apps are open, via a microphone foreground service with a Hang up notification. If you grant "Display over other apps" (asked once, the first time you call; there's also a manual toggle in Agent preferences), a small status pill floats over whatever app is open — listening / thinking / controlling your phone — so you can see what it's doing without switching back.
+
+By default it speaks with the phone's own text-to-speech, nudged toward a more natural installed voice where the device offers one. For a noticeably more natural voice, point **Custom call voice server** (Agent preferences) at a self-hosted [Piper](https://github.com/rhasspy/piper) HTTP server — `python3 http_server.py --model <voice>.onnx` — and calls speak through that instead, falling back to the system voice if the server doesn't respond.
+
+Skills you've created run in calls too (and everywhere else): saying a skill's name or one of its trigger phrases runs it directly, without waiting on the model to decide to use it.
 
 ### Custom provider
 
@@ -139,7 +145,9 @@ Info and Accessibility Settings during onboarding.
 To enable remote access:
 1. Acquire a bot token from BotFather on Telegram.
 2. Input the token in the PrivateAgent Settings screen and enable the integration toggle.
-3. The application will maintain a background polling connection to the Telegram API to receive commands.
+3. The app polls Telegram for messages and keeps doing so in the background via a small foreground service, so it stays reachable with the screen off or another app open.
+
+A Telegram message goes through the same Auto-mode agent the app itself uses — multi-step tasks, learned workflows and skills, memory, everything — not just single actions, and runs unattended (no confirmation prompts; nobody's there to answer them). If "Display over other apps" is granted, it wakes the screen and brings PrivateAgent forward so the command can actually reach the screen; otherwise nothing can drive the screen while the app is backgrounded, which is an Android restriction, not something this app can route around.
 
 ## License
 

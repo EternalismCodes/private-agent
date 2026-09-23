@@ -189,6 +189,33 @@ class SkillsService {
     return scored.take(limit).map((e) => e.key).toList();
   }
 
+  /// A skill whose name or an explicit trigger phrase literally appears in
+  /// [query] — confident enough to run without asking the model first. Unlike
+  /// [match], plain keyword overlap never qualifies (that's too easy to
+  /// trigger by accident on an unrelated sentence).
+  AgentSkill? strongMatch(String query) {
+    final q = query.toLowerCase();
+    AgentSkill? best;
+    var bestLen = 0;
+    for (final s in _items) {
+      if (!s.enabled) continue;
+      if (s.name.trim().length >= 4 && q.contains(s.name.toLowerCase().trim())) {
+        if (s.name.length > bestLen) {
+          best = s;
+          bestLen = s.name.length;
+        }
+      }
+      for (final t in s.triggers) {
+        final trig = t.toLowerCase().trim();
+        if (trig.length >= 4 && q.contains(trig) && trig.length > bestLen) {
+          best = s;
+          bestLen = trig.length;
+        }
+      }
+    }
+    return best;
+  }
+
   /// Instructions of matching skills, formatted for a prompt.
   String promptFor(String query) {
     final matches = match(query);
