@@ -1,3 +1,4 @@
+import 'safe_cast.dart';
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:intl/intl.dart';
@@ -152,6 +153,8 @@ class AgentController {
 
       // "open <app>" needs no model at all.
       if (mode == AgentMode.auto || mode == AgentMode.planExecute) {
+        final yt = await _tryYoutubePlay(text, ui);
+        if (yt != null) return yt;
         final local = await _tryLocalIntent(text, ui);
         if (local != null) return local;
         // "search X on youtube/facebook/instagram": build the link and open
@@ -493,8 +496,10 @@ SIMPLE ACTIONS (one step):
 - make_call {"contact_name"} or {"phone_number"}
 - send_sms {"contact_name" or "phone_number", "message"}
 - search_contact {"query"}
-- set_alarm {"hour", "minute", "label"} (24-hour)
-- set_timer {"seconds", "label"}
+- set_alarm {"hour", "minute", "label"} (24-hour, plain numbers)
+- set_timer {"seconds", "label"} (plain number of seconds)
+- play_youtube {"query", "rank"}: search YouTube and start playing that result (rank 1 = top). Omit query to reuse the last YouTube search.
+- get_weather {"location", "days"}: real weather from a weather API (days 1-7)
 - set_volume {"level"} and set_brightness {"level"} (0-100)
 - open_url {"url"}
 - send_email {"to", "subject", "body"}
@@ -513,6 +518,7 @@ MEMORY AND AUTOMATION:
 RULES:
 - If a request has several steps ("open X and do Y"), use execute_task or plan_and_execute, never open_app.
 - Prefer execute_task (one app, one flow) and use plan_and_execute only when the job truly spans several different apps. Both are slower when they are used unnecessarily.
+- To play or watch something on YouTube use play_youtube, not execute_task. For any weather question use get_weather with the place name (ask which place if none was given). Numbers in params must be plain numbers.
 - Ask a short clarifying question in plain text instead of guessing when a required detail (who, what, when) is missing.
 - Do not claim you did something unless you used an action.
 - When the request needs something WRITTEN (a message, reply, caption, summary, explanation...) as part of a device action, write the actual, complete content yourself and put it in the goal — do not shorten it to the topic words. "send mom information about how AI is useful on WhatsApp" is not the goal "send mom info about how AI is useful"; the goal must contain the full message you composed, e.g. execute_task {"goal": "Open WhatsApp, open the chat with Mom, and send this message: \\"AI is useful because it can...\\" [your full composed message]"}. The step that actually types the message (later, inside execute_task) will only have your composed text to work with — if you don't write it here, it never gets written.''';
@@ -721,6 +727,9 @@ Examples:
 
       final url = classification.buildUrl();
       if (url == null) return null;
+      if (['youtube', 'yt'].contains(classification.platform.toLowerCase()) && classification.query.isNotEmpty) {
+        ctx.actions.noteYoutubeQuery(classification.query);
+      }
 
       // Open the URL
       final result = await ctx.actions.execute(
@@ -751,7 +760,8 @@ Examples:
   Future<QuickLinkClassification> _classifyForQuickLink(String prompt) async {
     try {
       final resp = await ctx.ai.sendMessage(
-        '$_classifySystemPrompt\n\nUser request:\n$prompt',
+        _classifySystemPrompt,
+        prompt,
         isAgentMode: true,
       );
       final text = resp.trim();
@@ -778,7 +788,7 @@ Examples:
         isSearch: obj['is_plain_search'] == true,
         isProfile: obj['is_profile'] == true,
         isHashtag: obj['is_hashtag'] == true,
-        confidence: (obj['confidence'] as num?)?.toDouble() ?? 0.0,
+        confidence: asDouble(obj['confidence']) ?? 0.0,
         furtherGoal: (obj['needs_further_automation'] as String?)?.trim() ?? '',
       );
     } catch (_) {
@@ -858,6 +868,45 @@ Examples:
 
   static const String _classifySystemPrompt = '''You are a classifier for search requests. Always respond with ONLY valid JSON, no other text, no markdown fences.''';
 
+
+  static final RegExp _ytSearchPlay = RegExp(
+      r'(?:search|find|look up|look for)\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+(?:youtube|yt)\s+(?:and|then)\s+(?:play|watch|open|click)\b',
+      caseSensitive: false);
+  static final RegExp _ytPlayOnYt = RegExp(
+      r'^\s*(?:(?:please|can you|could you|hey)\s+)*(?:play|watch)\s+(.+?)\s+(?:on|in|from)\s+(?:youtube|yt)\b',
+      caseSensitive: false);
+  static final RegExp _ytPlayTop = RegExp(
+      r'\b(?:play|watch|open|click|tap|start|select|choose|pick)\b[^.?!]{0,30}?\b(?:top|first|1st|number one|number 1|second|2nd|third|3rd)\b[^.?!]{0,20}?\b(?:result|video|one|link|song|track)\b',
+      caseSensitive: false);
+  static final RegExp _ytOrdinal =
+      RegExp(r'\b(top|first|1st|number one|number 1|second|2nd|third|3rd)\b', caseSensitive: false);
+
+  /// "play the top result" / "play X on youtube": resolves the video and
+  /// opens it directly, no model call and no screen-agent loop.
+  Future<AgentTurnResult?> _tryYoutubePlay(String text, AgentUi ui) async {
+    String? query = _ytSearchPlay.firstMatch(text)?.group(1);
+    if (query == null) {
+      final g = _ytPlayOnYt.firstMatch(text)?.group(1);
+      if (g != null && !_ytOrdinal.hasMatch(g)) query = g;
+    }
+    if (query == null && _ytPlayTop.hasMatch(text)) {
+      if (ctx.actions.recentYoutubeQuery.isEmpty) return null;
+      query = ctx.actions.recentYoutubeQuery;
+    }
+    if (query == null || query.trim().isEmpty) return null;
+    final o = _ytOrdinal.firstMatch(text)?.group(1)?.toLowerCase() ?? '';
+    final rank = (o == 'second' || o == '2nd') ? 2 : ((o == 'third' || o == '3rd') ? 3 : 1);
+    ui.onProgress('Playing on YouTube…');
+    final result = await ctx.actions.execute(
+      AgentAction(action: 'play_youtube', params: {'query': query.trim(), 'rank': rank}, response: ''),
+    );
+    final reply = (result.details ?? '').trim().isEmpty ? 'Done.' : result.details!.trim();
+    _history.add({'role': 'user', 'content': text});
+    _history.add({'role': 'assistant', 'content': reply});
+    _trimHistory();
+    ui.addMessage(ChatMessage(role: 'assistant', content: reply, actionResult: result, mode: AgentMode.auto.id));
+    return AgentTurnResult(reply: reply, usedDevice: true, success: result.success, speak: true);
+  }
 
   /// "open Instagram": opens the app straight away, no model call.
   Future<AgentTurnResult?> _tryLocalIntent(String text, AgentUi ui) async {
@@ -981,7 +1030,10 @@ Examples:
       onProgress: ui.onProgress,
     );
     final details = result.details ?? '';
-    final text = result.success
+    final useDetails = action.action == 'get_weather' && result.success && details.isNotEmpty;
+    final text = useDetails
+        ? details
+        : result.success
         ? (action.response.isNotEmpty ? action.response : (details.isEmpty ? 'Done.' : details))
         : (action.response.isNotEmpty ? '${action.response}\n\n⚠️ $details' : '⚠️ $details');
     ui.addMessage(

@@ -68,7 +68,6 @@ class MainActivity : FlutterActivity() {
         SchedulerBridge.register(flutterEngine, applicationContext)
         CallBridge.register(flutterEngine, this)
         TelegramBridge.register(flutterEngine, this)
-        AudioPlaybackBridge.register(flutterEngine, applicationContext)
     }
 
     companion object {
@@ -194,6 +193,16 @@ class MainActivity : FlutterActivity() {
                                 result.error("SERVICE_NOT_RUNNING", "Accessibility service is not running", null)
                             } else {
                                 result.success(service.scroll(direction, target))
+                            }
+                        }
+
+                        "clickFirstVideo" -> {
+                            val rank = call.argument<Int>("rank") ?: 1
+                            val service = AgentAccessibilityService.instance
+                            if (service == null) {
+                                result.error("SERVICE_NOT_RUNNING", "Accessibility service is not running", null)
+                            } else {
+                                result.success(service.clickFirstVideo(rank))
                             }
                         }
 

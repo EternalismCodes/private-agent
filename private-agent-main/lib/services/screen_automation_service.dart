@@ -359,4 +359,13 @@ class ScreenAutomationService {
       return null;
     }
   }
+
+  /// Taps the Nth video card in a YouTube results/feed list.
+  Future<bool> clickFirstVideo({int rank = 1}) async {
+    try {
+      return await _invoke<bool>('clickFirstVideo', {'rank': rank}) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
 }

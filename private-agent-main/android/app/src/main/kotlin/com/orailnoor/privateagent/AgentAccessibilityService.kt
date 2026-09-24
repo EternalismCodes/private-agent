@@ -270,6 +270,40 @@ class AgentAccessibilityService : AccessibilityService() {
         )
     }
 
+    /** Clicks the Nth video card (by on-screen order) in a YouTube list. */
+    fun clickFirstVideo(rank: Int): Boolean {
+        val cards = ArrayList<AccessibilityNodeInfo>()
+        val re = Regex("(?i)(play video|\\d+\\s*(hours?|minutes?|seconds?)|views?|watching)")
+        fun walk(n: AccessibilityNodeInfo, depth: Int) {
+            if (depth > 40) return
+            val desc = n.contentDescription?.toString() ?: ""
+            if (desc.length > 25 && re.containsMatchIn(desc) && !desc.contains("play short", true)) {
+                val r = Rect()
+                n.getBoundsInScreen(r)
+                if (r.height() > 120 && r.width() > 300 && r.top > 150) cards.add(n)
+            }
+            for (i in 0 until n.childCount) {
+                val c = n.getChild(i) ?: continue
+                walk(c, depth + 1)
+            }
+        }
+        for (w in windows) {
+            val root = w.root ?: continue
+            if (root.packageName?.toString() == ownPackageName) continue
+            walk(root, 0)
+        }
+        if (cards.isEmpty()) return false
+        fun topOf(n: AccessibilityNodeInfo): Int { val r = Rect(); n.getBoundsInScreen(r); return r.top }
+        val uniq = ArrayList<AccessibilityNodeInfo>()
+        var last = -1000
+        for (c in cards.sortedBy { topOf(it) }) {
+            val t = topOf(c)
+            if (t - last > 60) { uniq.add(c); last = t }
+        }
+        val target = uniq.getOrNull(rank - 1) ?: return false
+        return clickNodeOrParent(target)
+    }
+
     /** Click at specific coordinates using gesture */
     fun clickAtCoordinates(x: Float, y: Float): Boolean {
         val path = Path()

@@ -9,18 +9,32 @@ class CallBackground {
   static const MethodChannel _channel = MethodChannel('com.privateagent/call');
 
   /// Starts (or refreshes) the ongoing call notification/service.
-  static Future<bool> start(String text) async {
+  static Future<bool> start(String text, {String phase = 'listening', bool overlay = false}) async {
     try {
-      await _channel.invokeMethod('start', {'text': text});
+      await _channel.invokeMethod('start', {'text': text, 'phase': phase, 'overlay': overlay});
       return true;
     } catch (_) {
       return false;
     }
   }
 
-  static Future<void> update(String text) async {
+  static Future<void> update(String text, {String phase = 'listening'}) async {
     try {
-      await _channel.invokeMethod('update', {'text': text});
+      await _channel.invokeMethod('update', {'text': text, 'phase': phase});
+    } catch (_) {}
+  }
+
+  static Future<bool> overlayGranted() async {
+    try {
+      return await _channel.invokeMethod<bool>('overlayGranted') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> requestOverlay() async {
+    try {
+      await _channel.invokeMethod('requestOverlay');
     } catch (_) {}
   }
 

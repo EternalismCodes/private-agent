@@ -22,7 +22,7 @@ Each step is an object:
 - "action" and "params": only for kind "action".
 - "sensitive": true when the step sends a message, places a call, spends money, deletes or changes important data, posts publicly, or installs/uninstalls something.
 
-Direct actions: open_app {"app_name"}, make_call {"contact_name" or "phone_number"}, send_sms {"contact_name" or "phone_number","message"}, search_contact {"query"}, set_alarm {"hour","minute","label"}, set_timer {"seconds","label"}, set_volume {"level"}, set_brightness {"level"}, open_url {"url"}, send_email {"to","subject","body"}, read_screen {}, remember {"fact"}, wait {"seconds"}.
+Direct actions: open_app {"app_name"}, make_call {"contact_name" or "phone_number"}, send_sms {"contact_name" or "phone_number","message"}, search_contact {"query"}, set_alarm {"hour","minute","label"}, set_timer {"seconds","label"}, play_youtube {"query","rank"}, get_weather {"location","days"}, set_volume {"level"}, set_brightness {"level"}, open_url {"url"}, send_email {"to","subject","body"}, read_screen {}, remember {"fact"}, wait {"seconds"}.
 
 Rules:
 - Use "action" only when it exactly fits; otherwise use "ui".

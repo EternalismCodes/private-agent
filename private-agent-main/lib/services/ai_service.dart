@@ -3,6 +3,7 @@ import 'dart:developer' as developer;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../agent/vault_service.dart';
+import '../agent/safe_cast.dart';
 import '../models/agent_action.dart';
 
 class AiResponse {
@@ -77,7 +78,10 @@ SIMPLE ACTIONS (single step only):
 - make_call: {"contact_name": "Mom"} OR {"phone_number": "1234567890"} - Makes a phone call
 - send_sms: {"contact_name": "John", "message": "Hello"} OR {"phone_number": "123", "message": "Hi"} - Sends SMS
 - search_contact: {"query": "John"} - Searches contacts
-- set_alarm: {"hour": 7, "minute": 30, "label": "Wake up"} - Sets an alarm
+- set_alarm: {"hour": 7, "minute": 30, "label": "Wake up"} - Sets an alarm (24-hour numbers)
+- set_timer: {"seconds": 300, "label": "Tea"} - Starts a countdown timer
+- play_youtube: {"query": "lofi beats", "rank": 1} - Searches YouTube and plays that result directly (rank 1 = top). Use for "play X" / "play the top result"
+- get_weather: {"location": "Paris", "days": 1} - Real weather for a place; ALWAYS use for weather questions
 - set_volume: {"level": 50} - Sets volume (0-100)
 - set_brightness: {"level": 50} - Sets brightness (0-100)
 - read_screen: {} - Read what's currently on the screen
@@ -574,7 +578,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
         int tokens = 0;
         if (data.containsKey('usage') &&
             data['usage']['total_tokens'] != null) {
-          tokens = data['usage']['total_tokens'] as int;
+          tokens = asInt(data['usage']['total_tokens']) ?? 0;
         }
         return AiResponse(content, tokens);
       } catch (e) {

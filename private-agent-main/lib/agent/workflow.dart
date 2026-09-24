@@ -1,3 +1,4 @@
+import 'safe_cast.dart';
 import 'dart:math' as math;
 import '../models/saved_skill.dart';
 
@@ -159,8 +160,8 @@ class WorkflowKit {
     if (action == 'click_text') {
       target = findByLabel(pre.nodes, (params['text'] ?? '').toString());
     } else if (action == 'click_at') {
-      final x = (params['x'] as num?)?.toDouble() ?? 0;
-      final y = (params['y'] as num?)?.toDouble() ?? 0;
+      final x = asDouble(params['x']) ?? 0;
+      final y = asDouble(params['y']) ?? 0;
       target = nodeAt(pre.nodes, x, y);
     }
     if (target != null) {

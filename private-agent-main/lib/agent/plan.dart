@@ -10,6 +10,8 @@ const Set<String> kPlannableActions = {
   'search_contact',
   'set_alarm',
   'set_timer',
+  'play_youtube',
+  'get_weather',
   'set_volume',
   'set_brightness',
   'open_url',

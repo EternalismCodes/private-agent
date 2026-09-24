@@ -11,9 +11,9 @@ class AgentAction {
 
   factory AgentAction.fromJson(Map<String, dynamic> json) {
     return AgentAction(
-      action: json['action'] as String? ?? 'general_query',
-      params: json['params'] as Map<String, dynamic>? ?? {},
-      response: json['response'] as String? ?? '',
+      action: json['action']?.toString() ?? 'general_query',
+      params: json['params'] is Map ? Map<String, dynamic>.from(json['params'] as Map) : <String, dynamic>{},
+      response: json['response']?.toString() ?? '',
     );
   }
 
@@ -23,6 +23,9 @@ class AgentAction {
     'send_sms',
     'search_contact',
     'set_alarm',
+    'set_timer',
+    'play_youtube',
+    'get_weather',
     'set_volume',
     'set_brightness',
     'read_notifications',

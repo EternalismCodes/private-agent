@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../agent/agent_controller.dart';
 import '../agent/agent_mode.dart';
@@ -9,7 +8,6 @@ import '../agent/plan.dart';
 import '../agent/prefs.dart';
 import '../models/chat_message.dart';
 import '../services/call_background.dart';
-import '../services/call_tts_service.dart';
 import '../services/voice_service.dart';
 
 enum CallPhase { connecting, listening, thinking, acting, speaking, ended }
@@ -35,7 +33,7 @@ class CallScreen extends StatefulWidget {
   State<CallScreen> createState() => _CallScreenState();
 }
 
-class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateMixin {
+class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   CallPhase _phase = CallPhase.connecting;
   String _heard = '';
   String _said = '';
@@ -46,8 +44,7 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
   bool _finished = false;
   final List<String> _speechQueue = [];
   Future<void>? _speaking;
-  late final CallTtsService _tts = CallTtsService(widget.voice, endpoint: AgentPrefs.instance.callTtsUrl);
-  bool _overlayShown = false;
+  Completer<void>? _resumed;
   DateTime _lastActivity = DateTime.now();
   final List<ChatMessage> _transcript = [];
   final Stopwatch _clock = Stopwatch()..start();
@@ -94,6 +91,7 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _tick = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
@@ -103,12 +101,20 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
   @override
   void dispose() {
     _active = false;
+    WidgetsBinding.instance.removeObserver(this);
     _tick?.cancel();
     _pulse.dispose();
     CallBackground.onHangup(null);
     widget.voice.stopListening();
-    _tts.stop();
+    widget.voice.stopSpeaking();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _resumed != null && !_resumed!.isCompleted) {
+      _resumed!.complete();
+    }
   }
 
   void _setPhase(CallPhase phase, {String? progress}) {
@@ -126,57 +132,29 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
           : (_progress.length > 70 ? '${_progress.substring(0, 70)}…' : _progress),
       _ => 'On a call',
     };
-    if (text != _lastNotification) {
-      _lastNotification = text;
-      CallBackground.update(text);
+    final key = '${phase.name}|$text';
+    if (key != _lastNotification) {
+      _lastNotification = key;
+      CallBackground.update(text, phase: phase.name);
     }
-    // The notification already updates via CallBackground.update() above;
-    // the overlay (if shown) will automatically reflect the new notification text.
   }
 
-  /// Shows the small status pill over other apps, if the person has it
-  /// turned on. Asks for the "display over other apps" permission the first
-  /// time a call is made (and only then — a decline is respected afterwards;
-  /// there's still a manual "Grant" button in Agent preferences).
-  Future<void> _maybeShowStatusOverlay() async {
-    if (!AgentPrefs.instance.showCallOverlay) return;
+  /// Asks for "display over other apps" once (the dynamic-island pill needs
+  /// it) and waits for the person to come back from the system screen.
+  Future<bool> _ensureOverlayPermission() async {
+    if (!AgentPrefs.instance.showCallOverlay) return false;
     try {
+      if (await CallBackground.overlayGranted()) return true;
       final prefs = await SharedPreferences.getInstance();
-      var granted = await FlutterOverlayWindow.isPermissionGranted();
-      if (!granted) {
-        final alreadyAsked = prefs.getBool('asked_overlay_permission') ?? false;
-        if (alreadyAsked) return;
-        await prefs.setBool('asked_overlay_permission', true);
-        granted = await FlutterOverlayWindow.requestPermission() ?? false;
-      }
-      if (!granted || !_active) return;
-
-      if (!await FlutterOverlayWindow.isActive()) {
-        await FlutterOverlayWindow.showOverlay(
-          height: 46,
-          width: 280,
-          alignment: OverlayAlignment.topCenter,
-          flag: OverlayFlag.clickThrough,
-          enableDrag: false,
-          visibility: NotificationVisibility.visibilitySecret,
-          overlayTitle: 'PrivateAgent call',
-          overlayContent: 'Call in progress',
-        );
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-      }
-      _overlayShown = true;
-      _setPhase(_phase); // push the current status right away
+      if (prefs.getBool('asked_overlay_permission') ?? false) return false;
+      await prefs.setBool('asked_overlay_permission', true);
+      _resumed = Completer<void>();
+      await CallBackground.requestOverlay();
+      await _resumed!.future.timeout(const Duration(seconds: 90), onTimeout: () {});
+      return await CallBackground.overlayGranted();
     } catch (_) {
-      _overlayShown = false;
+      return false;
     }
-  }
-
-  Future<void> _closeStatusOverlay() async {
-    if (!_overlayShown) return;
-    _overlayShown = false;
-    try {
-      await FlutterOverlayWindow.closeOverlay();
-    } catch (_) {}
   }
 
   static const double _speechRate = 0.58;
@@ -186,7 +164,7 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
     await _flushSpeech();
     if (mounted) setState(() => _said = text);
     _setPhase(CallPhase.speaking);
-    await _tts.speak(JsonUtils.forSpeech(text, maxChars: 420), systemRate: _speechRate);
+    await widget.voice.speakAndWait(JsonUtils.forSpeech(text, maxChars: 420), rate: _speechRate);
   }
 
   /// Sentences are spoken one after another as soon as they arrive, so the
@@ -205,7 +183,7 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
       final sentence = _speechQueue.removeAt(0);
       _setPhase(CallPhase.speaking);
       if (mounted) setState(() => _said = sentence);
-      await _tts.speak(JsonUtils.forSpeech(sentence, maxChars: 300), systemRate: _speechRate);
+      await widget.voice.speakAndWait(JsonUtils.forSpeech(sentence, maxChars: 300), rate: _speechRate);
     }
     await Future<void>.delayed(const Duration(milliseconds: 250)); // let the echo die down
     _speaking = null;
@@ -255,9 +233,9 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
       }
 
       // Foreground service: keeps the microphone usable in the background.
-      await CallBackground.start('Listening…');
+      final overlay = await _ensureOverlayPermission();
+      await CallBackground.start('Listening…', phase: 'listening', overlay: overlay);
       CallBackground.onHangup(_hangUp);
-      unawaited(_maybeShowStatusOverlay());
 
       final name = AgentPrefs.instance.userName;
       await _say(
@@ -320,23 +298,32 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
     if (_finished) return;
     _finished = true;
     _active = false;
+    _speechQueue.clear();
     CallBackground.onHangup(null);
-    await widget.voice.stopListening();
-    await _tts.stop();
-    await CallBackground.stop();
-    await _closeStatusOverlay();
-    if (!mounted) return;
-    setState(() => _phase = CallPhase.ended);
-    Navigator.of(context).pop(_transcript);
+    // Leave the call screen immediately so a slow speech engine or service
+    // can never leave the UI stuck.
+    if (mounted) {
+      setState(() => _phase = CallPhase.ended);
+      Navigator.of(context).pop(_transcript);
+    }
+    Future<void> safe(Future<void> f) async {
+      try {
+        await f.timeout(const Duration(seconds: 2));
+      } catch (_) {}
+    }
+
+    await Future.wait([
+      safe(widget.voice.stopListening()),
+      safe(widget.voice.stopSpeaking()),
+      safe(CallBackground.stop()),
+    ]);
   }
 
   void _hangUp() {
+    if (_finished) return;
     _active = false;
     widget.controller.cancel();
-    // Don't call _finish() here — the main loop already does it in a finally block.
-    // Just flag that the call is no longer active; the loop will exit and
-    // finish() will be called once. If we call it twice, we get double-
-    // cleanup and sometimes get stuck on screen.
+    unawaited(_finish());
   }
 
   String get _label {

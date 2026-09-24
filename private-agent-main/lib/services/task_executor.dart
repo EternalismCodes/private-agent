@@ -1,3 +1,4 @@
+import '../agent/safe_cast.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:developer' as developer;
@@ -555,8 +556,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
           break;
 
         case 'click_at':
-          final x = (params['x'] as num?)?.toDouble() ?? 0;
-          final y = (params['y'] as num?)?.toDouble() ?? 0;
+          final x = asDouble(params['x']) ?? 0;
+          final y = asDouble(params['y']) ?? 0;
           success = await _screenService.clickAt(x, y);
           actionResult = success ? 'Clicked at ($x, $y)' : 'Click failed';
           break;
@@ -582,10 +583,10 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
           break;
 
         case 'swipe':
-          final startX = (params['startX'] as num?)?.toDouble() ?? 540;
-          final startY = (params['startY'] as num?)?.toDouble() ?? 2000;
-          final endX = (params['endX'] as num?)?.toDouble() ?? 540;
-          final endY = (params['endY'] as num?)?.toDouble() ?? 500;
+          final startX = asDouble(params['startX']) ?? 540;
+          final startY = asDouble(params['startY']) ?? 2000;
+          final endX = asDouble(params['endX']) ?? 540;
+          final endY = asDouble(params['endY']) ?? 500;
 
           success = await _performSwipe(startX, startY, endX, endY);
           actionResult = 'Swiped from ($startX,$startY) to ($endX,$endY)';
@@ -1006,8 +1007,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
     final label = recText.isNotEmpty
         ? recText
         : (recDesc.isNotEmpty ? recDesc : (step.params['text'] ?? '').toString());
-    final recX = (meta['cx'] as num?)?.toDouble();
-    final recY = (meta['cy'] as num?)?.toDouble();
+    final recX = asDouble(meta['cx']);
+    final recY = asDouble(meta['cy']);
 
     // The element may still be loading: look for it for up to ~2.5 seconds.
     var live = snap;
@@ -1036,8 +1037,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
     if (recX != null && recY != null) {
       return _screenService.clickAt(recX, recY);
     }
-    final x = (step.params['x'] as num?)?.toDouble();
-    final y = (step.params['y'] as num?)?.toDouble();
+    final x = asDouble(step.params['x']);
+    final y = asDouble(step.params['y']);
     if (x != null && y != null) return _screenService.clickAt(x, y);
     return false;
   }
@@ -1111,10 +1112,10 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
           actionResult = credError ?? 'Typed the saved credential';
           break;
         case 'swipe':
-          final startX = (step.params['startX'] as num?)?.toDouble() ?? 540;
-          final startY = (step.params['startY'] as num?)?.toDouble() ?? 2000;
-          final endX = (step.params['endX'] as num?)?.toDouble() ?? 540;
-          final endY = (step.params['endY'] as num?)?.toDouble() ?? 500;
+          final startX = asDouble(step.params['startX']) ?? 540;
+          final startY = asDouble(step.params['startY']) ?? 2000;
+          final endX = asDouble(step.params['endX']) ?? 540;
+          final endY = asDouble(step.params['endY']) ?? 500;
           success = await _performSwipe(startX, startY, endX, endY);
           actionResult = 'Swiped from ($startX,$startY) to ($endX,$endY)';
           break;
