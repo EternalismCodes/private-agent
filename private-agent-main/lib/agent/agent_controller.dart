@@ -1,4 +1,6 @@
 import 'safe_cast.dart';
+import '../lab/lab_prefs.dart';
+import '../lab/teach.dart';
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:intl/intl.dart';
@@ -153,6 +155,8 @@ class AgentController {
 
       // "open <app>" needs no model at all.
       if (mode == AgentMode.auto || mode == AgentMode.planExecute) {
+        final an = await _tryAnalyze(text, ui);
+        if (an != null) return an;
         final yt = await _tryYoutubePlay(text, ui);
         if (yt != null) return yt;
         final local = await _tryLocalIntent(text, ui);
@@ -500,6 +504,8 @@ SIMPLE ACTIONS (one step):
 - set_timer {"seconds", "label"} (plain number of seconds)
 - play_youtube {"query", "rank"}: search YouTube and start playing that result (rank 1 = top). Omit query to reuse the last YouTube search.
 - get_weather {"location", "days"}: real weather from a weather API (days 1-7)
+- analyze_screen {"question"}: (experimental) take a screenshot and answer about it with the vision model; use when asked to look at / analyse / read the screen or take a screenshot
+- run_taught {"name", "vars"}: (experimental) replay a task the user taught; see TAUGHT TASKS below when present
 - set_volume {"level"} and set_brightness {"level"} (0-100)
 - open_url {"url"}
 - send_email {"to", "subject", "body"}
@@ -530,9 +536,10 @@ RULES:
 \nSCHEDULED TASK: this request comes from a schedule and runs unattended, nobody is there to answer questions. Do it now with an action (execute_task or plan_and_execute for anything on the phone). Do not ask for confirmation. If it is an information request, use an action to read the answer from the phone or reply directly.''';
 
   Future<AgentTurnResult> _auto(String text, AgentUi ui) async {
+    await LabTeach.instance.ensureLoaded();
     final context = await ctx.contextBlock(text, includeSkillCatalog: true);
     final system =
-        '$_autoPrompt${_voiceCall ? _voiceAddendum : ''}${_unattended ? _unattendedAddendum : ''}\n\n$context';
+        '$_autoPrompt${_voiceCall ? _voiceAddendum : ''}${_unattended ? _unattendedAddendum : ''}${LabTeach.instance.promptSection()}\n\n$context';
 
     _history.add({'role': 'user', 'content': text});
     _trimHistory();
@@ -760,7 +767,8 @@ Examples:
   Future<QuickLinkClassification> _classifyForQuickLink(String prompt) async {
     try {
       final resp = await ctx.ai.sendMessage(
-        '$_classifySystemPrompt\n\nUser request:\n$prompt',
+        _classifySystemPrompt,
+        prompt,
         isAgentMode: true,
       );
       final text = resp.trim();
@@ -867,6 +875,28 @@ Examples:
 
   static const String _classifySystemPrompt = '''You are a classifier for search requests. Always respond with ONLY valid JSON, no other text, no markdown fences.''';
 
+
+  static final RegExp _analyzeRe = RegExp(
+      r"\b(?:take|grab|capture)\b[^.?!]{0,20}\bscreenshot\b|\b(?:analy[sz]e|describe|explain|read|look at|check)\b[^.?!]{0,25}\b(?:screen|screenshot|page)\b|\bwhat(?:'s| is)\b[^.?!]{0,15}\bon (?:my |the )?screen\b",
+      caseSensitive: false);
+
+  /// Experimental: "analyse my screen" -> screenshot + vision model (only when enabled).
+  Future<AgentTurnResult?> _tryAnalyze(String text, AgentUi ui) async {
+    if (!_analyzeRe.hasMatch(text)) return null;
+    await LabPrefs.instance.load();
+    if (!LabPrefs.instance.vision) return null;
+    ui.onProgress('Looking at the screen…');
+    final result = await ctx.actions.execute(
+      AgentAction(action: 'analyze_screen', params: {'question': text}, response: ''),
+      aiService: ctx.ai,
+    );
+    final reply = (result.details ?? '').trim().isEmpty ? 'Done.' : result.details!.trim();
+    _history.add({'role': 'user', 'content': text});
+    _history.add({'role': 'assistant', 'content': reply});
+    _trimHistory();
+    ui.addMessage(ChatMessage(role: 'assistant', content: reply, actionResult: result, mode: AgentMode.auto.id));
+    return AgentTurnResult(reply: reply, usedDevice: true, success: result.success, speak: true);
+  }
 
   static final RegExp _ytSearchPlay = RegExp(
       r'(?:search|find|look up|look for)\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+(?:youtube|yt)\s+(?:and|then)\s+(?:play|watch|open|click)\b',
@@ -1029,12 +1059,12 @@ Examples:
       onProgress: ui.onProgress,
     );
     final details = result.details ?? '';
-    final useDetails = action.action == 'get_weather' && result.success && details.isNotEmpty;
+    final useDetails = const {'get_weather', 'analyze_screen'}.contains(action.action) && result.success && details.isNotEmpty;
     final text = useDetails
         ? details
         : result.success
         ? (action.response.isNotEmpty ? action.response : (details.isEmpty ? 'Done.' : details))
-        : (action.response.isNotEmpty ? '${action.response}\n\n⚠️ $details' : '⚠️ $details');
+        : '⚠️ $details';
     ui.addMessage(
       ChatMessage(role: 'assistant', content: text, actionResult: result, mode: AgentMode.auto.id),
     );

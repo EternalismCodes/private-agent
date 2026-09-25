@@ -189,6 +189,13 @@ class SchedulerService {
     } catch (_) {}
   }
 
+  /// Lets the screen sleep again after a remote (Telegram) job finished.
+  Future<void> releaseWake() async {
+    try {
+      await _channel.invokeMethod('releaseWake');
+    } catch (_) {}
+  }
+
   Future<void> _nativeDismiss(String id) async {
     try {
       await _channel.invokeMethod('dismiss', {'id': id});

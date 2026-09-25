@@ -1,4 +1,5 @@
 import '../agent/safe_cast.dart';
+import '../lab/lab_vision.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:developer' as developer;
@@ -243,6 +244,7 @@ Rules:
     int sameActionCount = 0;
     int consecutiveFailures = 0;
     String lastFailedAction = '';
+    int labRescues = 0;
     int totalTokens = 0;
     final List<ActionStep> executedSteps = [];
 
@@ -650,6 +652,22 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
         } else {
           consecutiveFailures = 1;
           lastFailedAction = action;
+        }
+
+        // Experimental: vision-model rescue when stuck (no-op unless enabled).
+        if (consecutiveFailures >= 3 && labRescues < 3) {
+          labRescues++;
+          final acted = await LabVision.instance.rescue(
+            goal: userGoal,
+            failedAction: lastFailedAction,
+            screen: _screenService,
+            ai: _aiService,
+            report: (m) => _report(m),
+          );
+          if (acted) {
+            consecutiveFailures = 0;
+            continue;
+          }
         }
 
         // If stuck for 5+ consecutive failures, give up on this task

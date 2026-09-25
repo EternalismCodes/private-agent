@@ -24,6 +24,7 @@ import '../agent/plan.dart';
 import '../agent/scheduler_service.dart';
 import '../agent/skills_service.dart';
 import 'agent_settings_screen.dart';
+import '../lab/lab_screen.dart';
 import 'call_screen.dart';
 import 'memory_screen.dart';
 import 'schedules_screen.dart';
@@ -725,6 +726,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             icon: const Icon(Icons.add_comment_outlined),
             tooltip: 'New chat',
             onPressed: _isLoading ? null : _startNewChat,
+          ),
+          IconButton(
+            icon: const Icon(Icons.school_outlined),
+            tooltip: 'Teach & experiments',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => LabScreen(
+                  screen: _actionHandler.screenAutomation,
+                  launcher: _actionHandler.appLauncher,
+                  ai: _aiService,
+                ),
+              ),
+            ),
           ),
           // Settings Action
           IconButton(

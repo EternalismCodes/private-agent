@@ -12,6 +12,8 @@ import 'task_executor.dart';
 import 'ai_service.dart';
 import 'weather_service.dart';
 import 'youtube_service.dart';
+import '../lab/lab_vision.dart';
+import '../lab/teach.dart';
 
 class ActionHandler {
   final AppLauncherService _appLauncher = AppLauncherService();
@@ -49,7 +51,7 @@ class ActionHandler {
     return s.isEmpty ? null : s;
   }
 
-  static const Set<String> _strict = {'set_alarm', 'set_timer', 'get_weather', 'play_youtube'};
+  static const Set<String> _strict = {'set_alarm', 'set_timer', 'get_weather', 'play_youtube', 'analyze_screen', 'run_taught'};
   static final RegExp _failed = RegExp(r'^(error|could not|cannot|unable)', caseSensitive: false);
 
   /// Execute an action and return the result
@@ -126,6 +128,30 @@ class ActionHandler {
           final rank = asInt(p['rank']) ?? 1;
           result = await _youtube.play(q, rank: rank < 1 ? 1 : (rank > 10 ? 10 : rank), screen: _screenAutomation);
           if (q.isNotEmpty) noteYoutubeQuery(q);
+          break;
+
+        case 'analyze_screen':
+          result = await LabVision.instance.analyze(
+            _s(p['question'] ?? p['query']),
+            screen: _screenAutomation,
+            launcher: _appLauncher,
+            ai: aiService,
+          );
+          break;
+
+        case 'run_taught':
+          final tvars = <String, dynamic>{};
+          final rawVars = p['vars'] ?? p['variables'];
+          if (rawVars is Map) {
+            rawVars.forEach((k, v) => tvars['$k'] = v);
+          }
+          result = await LabTeach.instance.run(
+            _s(p['name']),
+            tvars,
+            screen: _screenAutomation,
+            launcher: _appLauncher,
+            onProgress: onProgress,
+          );
           break;
 
         case 'run_adb_command':
@@ -206,5 +232,6 @@ class ActionHandler {
   /// Cancel the currently running task
   void cancelTask() {
     _currentExecutor?.cancel();
+    LabTeach.instance.cancel();
   }
 }

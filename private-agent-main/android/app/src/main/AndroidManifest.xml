@@ -18,6 +18,8 @@
     <!-- Scheduled tasks -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -95,6 +97,15 @@
             android:foregroundServiceType="dataSync" />
 
         <!-- Wake-up alarms for scheduled tasks -->
+        <receiver android:name=".ClockReceiver" android:exported="false" />
+        <service android:name=".RingingAlarmService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
+        <activity
+            android:name=".AlarmRingActivity"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:excludeFromRecents="true"
+            android:showOnLockScreen="true"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
         <receiver android:name=".ScheduleReceiver" android:exported="false" />
         <receiver android:name=".BootReceiver" android:exported="false">
             <intent-filter>

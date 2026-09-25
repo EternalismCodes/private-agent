@@ -69,6 +69,10 @@ object SchedulerBridge {
                         wakeAndLaunch(appContext, "telegram", goal)
                         result.success(true)
                     }
+                    "releaseWake" -> {
+                        releaseWake()
+                        result.success(true)
+                    }
                     "canDrawOverlays" -> result.success(Settings.canDrawOverlays(appContext))
                     "openOverlaySettings" -> {
                         val intent = Intent(
@@ -170,6 +174,13 @@ object SchedulerBridge {
      * opens it directly so the task starts without a tap. Otherwise the
      * notification below is the way in.
      */
+    private var remoteWl: PowerManager.WakeLock? = null
+
+    fun releaseWake() {
+        try { remoteWl?.let { if (it.isHeld) it.release() } } catch (e: Exception) { }
+        remoteWl = null
+    }
+
     @Suppress("DEPRECATION")
     fun wakeAndLaunch(context: Context, id: String, goal: String) {
         try {
@@ -178,10 +189,17 @@ object SchedulerBridge {
                 PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
                 "PrivateAgent:scheduledTask"
             )
-            wl.acquire(45_000L)
+            try { remoteWl?.let { if (it.isHeld) it.release() } } catch (e: Exception) { }
+            remoteWl = wl
+            wl.acquire(600_000L)
         } catch (e: Exception) {
             // Wake lock is best-effort.
         }
+        // Try a direct launch first (works when we already have SYSTEM_ALERT_WINDOW or are
+        // otherwise exempt); if Android blocks it, fall back to a full-screen-intent
+        // notification, which Android is required to honor regardless of that permission —
+        // the same mechanism alarm and incoming-call apps use to appear unprompted.
+        var launched = false
         try {
             if (Settings.canDrawOverlays(context)) {
                 val launch = Intent(context, MainActivity::class.java)
@@ -189,10 +207,33 @@ object SchedulerBridge {
                 launch.putExtra(EXTRA_ID, id)
                 launch.putExtra(EXTRA_GOAL, goal)
                 context.startActivity(launch)
+                launched = true
             }
-        } catch (e: Exception) {
-            // Background launch not allowed: the notification still works.
-        }
+        } catch (e: Exception) { }
+        if (!launched) postFullScreenWake(context, id, goal)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun postFullScreenWake(context: Context, id: String, goal: String) {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val channel = NotificationChannel(NOTIFICATION_CHANNEL_ID, "Scheduled tasks", NotificationManager.IMPORTANCE_HIGH)
+        channel.description = "Tasks PrivateAgent should run at a set time"
+        manager.createNotificationChannel(channel)
+        val launch = Intent(context, MainActivity::class.java)
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        launch.putExtra(EXTRA_ID, id)
+        launch.putExtra(EXTRA_GOAL, goal)
+        val full = PendingIntent.getActivity(context, id.hashCode(), launch, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = android.app.Notification.Builder(context, NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle("PrivateAgent is working on: ")
+            .setContentText(if (goal.isBlank()) "A remote task is running." else goal)
+            .setCategory(android.app.Notification.CATEGORY_CALL)
+            .setFullScreenIntent(full, true)
+            .setContentIntent(full)
+            .setAutoCancel(true)
+            .build()
+        manager.notify(id.hashCode(), n)
     }
 
     @Suppress("DEPRECATION")

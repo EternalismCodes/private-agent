@@ -139,6 +139,21 @@ class TelegramService {
   }
 
   Future<void> _handleIncomingMessage(String chatId, String text) async {
+    final cmd = text.trim().toLowerCase();
+    if (cmd == '/stop' || cmd == 'stop') {
+      _controller.cancel();
+      await _sendMessage(chatId, '🛑 Stopped.');
+      return;
+    }
+    if (cmd == '/status') {
+      await _sendMessage(chatId, _controller.busy ? '⏳ Working on a request.' : '✅ Idle and listening.');
+      return;
+    }
+    if (cmd == '/start' || cmd == '/help') {
+      await _sendMessage(chatId,
+          '🤖 Send any request (e.g. "open WhatsApp and message Sam hi", "set a 10 minute timer", "weather in Paris").\n/stop cancels the current job, /status shows what I am doing.\nThe phone must be unlocked for me to control other apps.');
+      return;
+    }
     if (_controller.busy) {
       await _sendMessage(chatId, '🤖 Still working on the previous request — try again in a moment.');
       return;
@@ -164,6 +179,8 @@ class TelegramService {
       final message = e.toString().replaceFirst('Exception: ', '');
       await _sendMessage(chatId, '❌ Error: $message');
       _log('✘ $text — $message');
+    } finally {
+      unawaited(SchedulerService.instance.releaseWake());
     }
   }
 
