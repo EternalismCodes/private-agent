@@ -25,6 +25,7 @@ class AgentAction {
     'set_alarm',
     'set_timer',
     'play_youtube',
+    'play_favorite',
     'get_weather',
     'send_whatsapp',
     'send_ir',

@@ -241,6 +241,9 @@ Rules:
     // Smart pre-launch shortcuts: execute common sequences without LLM
     final shortcut = _getNavigationShortcut(userGoal);
     String lastAction = '';
+    String previousScreenContent = '';
+    int consecutiveStalls = 0;
+    int verifyBounces = 0;
     int sameActionCount = 0;
     int consecutiveFailures = 0;
     String lastFailedAction = '';
@@ -333,6 +336,26 @@ Rules:
         name: 'PrivateAgent',
       );
 
+      // Detect a "silent failure": the native action reported success but the
+      // screen looks exactly like it did before the action, for an action type
+      // that should visibly change something. The model already gets a fresh
+      // screen dump every step, so surfacing this costs no extra round trip —
+      // it just tells the model its last move didn't actually do anything.
+      const changeActions = {
+        'click_text', 'click_at', 'type_text', 'press_enter', 'swipe', 'press_back',
+      };
+      String stallHint = '';
+      if (step > 0 &&
+          changeActions.contains(lastAction) &&
+          screenContent.trim() == previousScreenContent.trim()) {
+        consecutiveStalls++;
+        stallHint =
+            '\n\nNOTE: Your previous action ($lastAction) did not visibly change anything on screen — it may have missed its target, or nothing happened. Do not repeat it; look again and try a different element or approach.';
+      } else {
+        consecutiveStalls = 0;
+      }
+      previousScreenContent = screenContent;
+
       // Determine previous result string
       final prevResultStr = step > 0 && results.isNotEmpty
           ? '\nPREVIOUS ACTION RESULT: ${results.last}\n'
@@ -350,7 +373,7 @@ Rules:
           '''TASK: $userGoal
 
 CURRENT SCREEN TEXT DUMP:
-$screenContent$prevResultStr$failureHint
+$screenContent$prevResultStr$failureHint$stallHint
 Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. What is the next action?''';
 
       developer.log('=== AI PROMPT ===\n$prompt', name: 'PrivateAgent');
@@ -514,7 +537,24 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
       final action = actionJson['action'] as String? ?? 'done';
       final params = actionJson['params'] as Map<String, dynamic>? ?? {};
       final reasoning = actionJson['reasoning'] as String? ?? '';
-      final isComplete = actionJson['is_complete'] == true;
+      var isComplete = actionJson['is_complete'] == true;
+
+      if (consecutiveStalls >= 2 && labRescues < 3) {
+        labRescues++;
+        final acted = await LabVision.instance.rescue(
+          goal: userGoal,
+          failedAction: '$lastAction (ran, but nothing visibly changed, twice in a row)',
+          screen: _screenService,
+          ai: _aiService,
+          report: (m) => _report(m),
+        );
+        if (acted) {
+          consecutiveStalls = 0;
+          results.add('Used the vision model — repeated actions were having no visible effect.');
+          lastAction = 'vision_rescue';
+          continue;
+        }
+      }
 
       developer.log(
         '=== PARSED ACTION ===\nAction: $action\nParams: $params\nReasoning: $reasoning\nIs Complete: $isComplete',
@@ -761,6 +801,38 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
       }
 
       if (isComplete) {
+        // Verify once before trusting the model's own "done" claim: settle,
+        // re-read the screen post-action, and ask a short, separate check
+        // against the actual goal — this is what used to catch a task that
+        // only *looked* finished. Bounded to 2 bounces so a wrong verdict
+        // can't loop forever, and skipped entirely if verification itself
+        // errors, so it never blocks a real completion.
+        if (verifyBounces < 2) {
+          await Future.delayed(const Duration(milliseconds: 900));
+          try {
+            final postScreen = _aiService.useScreenCompression
+                ? await _screenService.getCompressedScreenDescription(userGoal)
+                : await _screenService.getScreenDescription();
+            final vr = await _aiService.sendTaskMessage(
+              'You check whether a phone-automation task actually finished. Reply with ONLY JSON: {"achieved": true or false, "reason": "one short sentence"}. Be strict — only true if the screen clearly shows the task is done.',
+              'TASK: $userGoal\n\nCURRENT SCREEN:\n$postScreen\n\nHas the task been achieved?',
+            );
+            totalTokens += vr.totalTokens;
+            tokensUsed = totalTokens;
+            final vj = jsonDecode(_extractJson(vr.content)) as Map<String, dynamic>;
+            if (vj['achieved'] != true) {
+              verifyBounces++;
+              final reason = '${vj['reason'] ?? ''}'.trim();
+              results.add('Verification: not yet complete${reason.isEmpty ? '' : ' — $reason'}.');
+              _report(reason.isEmpty ? 'Double-checking…' : 'Not quite there yet: $reason');
+              previousScreenContent = '';
+              continue;
+            }
+          } catch (_) {
+            // Verification failed to run — trust the model's own claim rather than stall.
+          }
+        }
+
         results.add('Task complete.');
         _report('Task complete.');
         await _notify(

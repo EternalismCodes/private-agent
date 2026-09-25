@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:android_intent_plus/flag.dart';
 import 'package:http/http.dart' as http;
 import 'screen_automation_service.dart';
+import 'favorites_service.dart';
 
 /// "Play the top result": looks up the real video id from YouTube's search
 /// page and opens it straight in the YouTube app (no tapping needed). If that
@@ -11,8 +13,10 @@ class YoutubeService {
   static final RegExp _card = RegExp(r'"videoRenderer":\{"videoId":"([A-Za-z0-9_-]{11})"');
   static final RegExp _any = RegExp(r'"videoId":"([A-Za-z0-9_-]{11})"');
   static final RegExp _title = RegExp(r'"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"');
+  static final RegExp _channel =
+      RegExp(r'"(?:shortBylineText|longBylineText|ownerText)":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"');
 
-  Future<List<({String id, String title})>> _search(String q) async {
+  Future<List<({String id, String title, String channel})>> _search(String q) async {
     final r = await http.get(
       Uri.parse('https://www.youtube.com/results?search_query=${Uri.encodeQueryComponent(q)}&hl=en'),
       headers: const {
@@ -26,13 +30,16 @@ class YoutubeService {
     var matches = _card.allMatches(body).toList();
     if (matches.isEmpty) matches = _any.allMatches(body).toList();
     final seen = <String>{};
-    final out = <({String id, String title})>[];
+    final out = <({String id, String title, String channel})>[];
+    String clean(String s) => s.replaceAll(r'\u0026', '&').replaceAll(r'\"', '"');
     for (final m in matches) {
       final id = m.group(1)!;
       if (!seen.add(id)) continue;
-      final end = m.end + 700 > body.length ? body.length : m.end + 700;
-      final t = _title.firstMatch(body.substring(m.end, end))?.group(1) ?? '';
-      out.add((id: id, title: t.replaceAll(r'\u0026', '&').replaceAll(r'\"', '"')));
+      final end = m.end + 900 > body.length ? body.length : m.end + 900;
+      final window = body.substring(m.end, end);
+      final t = _title.firstMatch(window)?.group(1) ?? '';
+      final ch = _channel.firstMatch(window)?.group(1) ?? '';
+      out.add((id: id, title: clean(t), channel: clean(ch)));
       if (out.length >= 10) break;
     }
     return out;
@@ -48,7 +55,12 @@ class YoutubeService {
     return false;
   }
 
-  Future<String> play(String query, {int rank = 1, required ScreenAutomationService screen}) async {
+  Future<String> play(
+    String query, {
+    int rank = 1,
+    required ScreenAutomationService screen,
+    FavoritesService? favorites,
+  }) async {
     final q = query.trim();
     if (q.isEmpty) {
       final ok = await screen.clickFirstVideo(rank: rank);
@@ -61,6 +73,7 @@ class YoutubeService {
       if (hits.length >= rank) {
         final v = hits[rank - 1];
         if (await _open('https://www.youtube.com/watch?v=${v.id}')) {
+          if (favorites != null) unawaited(favorites.recordPlay(v.channel, v.id, v.title));
           return 'Playing ${v.title.isEmpty ? 'the top result for "$q"' : '"${v.title}"'} on YouTube';
         }
       }
@@ -74,5 +87,16 @@ class YoutubeService {
       }
     }
     return 'Could not play a video for "$q".';
+  }
+
+  /// "Play something I like": picks up on a channel that has come up in 2+
+  /// separate plays and starts something from it.
+  Future<String> playFavorite({required FavoritesService favorites, required ScreenAutomationService screen}) async {
+    final fav = await favorites.top();
+    if (fav == null) {
+      return "I don't have a favorite of yours yet — play a couple of things and I'll start noticing patterns.";
+    }
+    final result = await play(fav.channel, screen: screen, favorites: favorites);
+    return result.startsWith('Playing') ? '$result (from ${fav.channel}, one of your favorites)' : result;
   }
 }

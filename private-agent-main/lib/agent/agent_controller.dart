@@ -155,6 +155,8 @@ class AgentController {
 
       // "open <app>" needs no model at all.
       if (mode == AgentMode.auto || mode == AgentMode.planExecute) {
+        final fav = await _tryFavorite(text, ui);
+        if (fav != null) return fav;
         final an = await _tryAnalyze(text, ui);
         if (an != null) return an;
         final yt = await _tryYoutubePlay(text, ui);
@@ -506,6 +508,7 @@ SIMPLE ACTIONS (one step):
 - get_weather {"location", "days"}: real weather from a weather API (days 1-7)
 - analyze_screen {"question"}: (experimental) take a screenshot and answer about it with the vision model; use when asked to look at / analyse / read the screen or take a screenshot
 - run_taught {"name", "vars"}: (experimental) replay a task the user taught; see TAUGHT TASKS below when present
+- play_favorite {}: plays something from the user's noticed favorite YouTube channel (a channel that has come up in 2+ separate plays). Use for "play something I like" / "play my favorite" / "play something good" with no specific title given.
 - send_whatsapp {"contact", "message"}: sends a WhatsApp message directly and fast (no need for execute_task). "contact" can be a saved contact name or a phone number; write the full message text yourself as usual.
 - send_ir {"name"}: sends a saved infrared remote code by device name (e.g. "ac", "tv", "ac 2")
 - save_ir {"name", "frequency", "pattern"}: saves an infrared code under a device name; frequency in Hz (usually 38000), pattern is the list of on/off microsecond durations the user gives you
@@ -770,7 +773,8 @@ Examples:
   Future<QuickLinkClassification> _classifyForQuickLink(String prompt) async {
     try {
       final resp = await ctx.ai.sendMessage(
-        '$_classifySystemPrompt\n\nUser request:\n$prompt',
+        _classifySystemPrompt,
+        prompt,
         isAgentMode: true,
       );
       final text = resp.trim();
@@ -892,6 +896,23 @@ Examples:
       AgentAction(action: 'analyze_screen', params: {'question': text}, response: ''),
       aiService: ctx.ai,
     );
+    final reply = (result.details ?? '').trim().isEmpty ? 'Done.' : result.details!.trim();
+    _history.add({'role': 'user', 'content': text});
+    _history.add({'role': 'assistant', 'content': reply});
+    _trimHistory();
+    ui.addMessage(ChatMessage(role: 'assistant', content: reply, actionResult: result, mode: AgentMode.auto.id));
+    return AgentTurnResult(reply: reply, usedDevice: true, success: result.success, speak: true);
+  }
+
+  static final RegExp _favoriteRe = RegExp(
+      r"\bplay\b[^.?!]{0,25}\b(?:something|anything|a\s*(?:video|song))?\s*(?:i|you)\s*(?:like|love|enjoy)\b|\bplay\b[^.?!]{0,15}\bmy\s*favou?rite\b|\bplay\b[^.?!]{0,15}\bsomething\s*good\b",
+      caseSensitive: false);
+
+  /// "Play something I like": no model call — goes straight to the noticed favorite channel.
+  Future<AgentTurnResult?> _tryFavorite(String text, AgentUi ui) async {
+    if (!_favoriteRe.hasMatch(text)) return null;
+    ui.onProgress('Playing something from your favorites…');
+    final result = await ctx.actions.execute(AgentAction(action: 'play_favorite', params: const {}, response: ''));
     final reply = (result.details ?? '').trim().isEmpty ? 'Done.' : result.details!.trim();
     _history.add({'role': 'user', 'content': text});
     _history.add({'role': 'assistant', 'content': reply});

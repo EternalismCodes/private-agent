@@ -16,6 +16,7 @@ import 'whatsapp_service.dart';
 import '../lab/lab_vision.dart';
 import '../lab/teach.dart';
 import 'ir_service.dart';
+import 'favorites_service.dart';
 
 class ActionHandler {
   final AppLauncherService _appLauncher = AppLauncherService();
@@ -28,6 +29,7 @@ class ActionHandler {
   final WeatherService _weather = WeatherService();
   final YoutubeService _youtube = YoutubeService();
   final IrService _ir = IrService();
+  final FavoritesService _favorites = FavoritesService();
   final WhatsappService _whatsapp = WhatsappService();
 
   ShizukuService get shizuku => _shizuku;
@@ -55,7 +57,7 @@ class ActionHandler {
     return s.isEmpty ? null : s;
   }
 
-  static const Set<String> _strict = {'set_alarm', 'set_timer', 'get_weather', 'play_youtube', 'analyze_screen', 'run_taught', 'send_ir', 'save_ir', 'send_whatsapp'};
+  static const Set<String> _strict = {'set_alarm', 'set_timer', 'get_weather', 'play_youtube', 'play_favorite', 'analyze_screen', 'run_taught', 'send_ir', 'save_ir', 'send_whatsapp'};
   static final RegExp _failed = RegExp(r'^(error|could not|cannot|unable)', caseSensitive: false);
 
   /// Execute an action and return the result
@@ -130,17 +132,36 @@ class ActionHandler {
           var q = _s(p['query'] ?? p['search'] ?? p['title']);
           if (q.isEmpty) q = recentYoutubeQuery;
           final rank = asInt(p['rank']) ?? 1;
-          result = await _youtube.play(q, rank: rank < 1 ? 1 : (rank > 10 ? 10 : rank), screen: _screenAutomation);
+          result = await _youtube.play(q, rank: rank < 1 ? 1 : (rank > 10 ? 10 : rank), screen: _screenAutomation, favorites: _favorites);
           if (q.isNotEmpty) noteYoutubeQuery(q);
           break;
 
+        case 'play_favorite':
+          result = await _youtube.playFavorite(favorites: _favorites, screen: _screenAutomation);
+          break;
+
         case 'send_whatsapp':
-          result = await _whatsapp.send(
-            _s(p['contact'] ?? p['to'] ?? p['phone']),
-            _s(p['message']),
-            contacts: _contacts,
-            screen: _screenAutomation,
-          );
+          final waContact = _s(p['contact'] ?? p['to'] ?? p['phone']);
+          final waMessage = _s(p['message']);
+          result = await _whatsapp.send(waContact, waMessage, contacts: _contacts, screen: _screenAutomation);
+          if (result.startsWith(kWhatsappFallbackPrefix)) {
+            if (aiService == null) {
+              result = 'Could not send it the fast way (${result.substring(kWhatsappFallbackPrefix.length).trim()}), and no AI service is available to fall back to.';
+              break;
+            }
+            onProgress?.call('Fast path did not work (${result.substring(kWhatsappFallbackPrefix.length).trim()}) — falling back to full navigation…');
+            _currentExecutor = TaskExecutor(
+              aiService: aiService,
+              screenService: _screenAutomation,
+              appLauncher: _appLauncher,
+              shizukuService: _shizuku,
+              onProgress: onProgress,
+            );
+            result = await _currentExecutor!.executeTask(
+              'Open WhatsApp, open the chat with "$waContact" (search for them if needed), and send this exact message: $waMessage',
+            );
+            _currentExecutor = null;
+          }
           break;
 
         case 'send_ir':
