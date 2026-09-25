@@ -229,19 +229,24 @@ class LabTeach {
       _cancel = false;
       onProgress?.call('Opening ${t.appName.isEmpty ? t.pkg : t.appName}…');
       await launcher.openPackage(t.pkg);
-      for (var i = 0; i < 16; i++) {
+      for (var i = 0; i < 20; i++) {
         if (await screen.getCurrentPackage() == t.pkg) break;
         await Future<void>.delayed(const Duration(milliseconds: 500));
       }
-      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      // A cold launch keeps drawing (splash, first frame, "what's new" banners)
+      // well after the package is already foreground; settle before step 1.
+      await Future<void>.delayed(const Duration(milliseconds: 2500));
       for (var i = 0; i < t.steps.length; i++) {
         if (_cancel) return 'Stopped.';
         final s = t.steps[i];
         onProgress?.call('Step ${i + 1}/${t.steps.length}: ${s.describe(vars)}');
-        final wait = s.type == 'wait' ? (asInt(s.d['ms']) ?? 2000) : _clamp(s.delayMs, 450, 2500);
+        final wait = s.type == 'wait'
+            ? (asInt(s.d['ms']) ?? 2000)
+            : (i == 0 ? _clamp(s.delayMs, 900, 2500) : _clamp(s.delayMs, 450, 2500));
         await Future<void>.delayed(Duration(milliseconds: wait));
         var ok = s.type == 'wait';
-        for (var a = 0; a < 4 && !ok; a++) {
+        final attempts = i == 0 ? 6 : 4;
+        for (var a = 0; a < attempts && !ok; a++) {
           if (_cancel) return 'Stopped.';
           switch (s.type) {
             case 'click':

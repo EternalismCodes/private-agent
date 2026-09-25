@@ -174,6 +174,17 @@ object LabTools {
         return tap(svc, r.exactCenterX(), r.exactCenterY())
     }
 
+    /** The window whose package matches [pkg] and whose area is largest (the actual app
+     * content window) — same scoping [LabRecorder.describe] uses so a same-app dialog or
+     * banner present only on one of the two runs cannot shift a positional index. Falls
+     * back to every non-own window if nothing matches (app package changed, etc.). */
+    private fun targetRoots(svc: AccessibilityService, pkg: String): List<AccessibilityNodeInfo> {
+        val all = roots(svc)
+        if (pkg.isEmpty()) return all
+        val matching = all.filter { it.packageName?.toString() == pkg }
+        return matching.ifEmpty { all }
+    }
+
     fun replayClick(svc: AccessibilityService, stepJson: String, match: String?): Boolean {
         val s = JSONObject(stepJson)
         val id = s.optString("id", "")
@@ -181,10 +192,11 @@ object LabTools {
         val desc = s.optString("desc", "")
         val cls = s.optString("cls", "")
         val idx = s.optInt("idx", -1)
+        val pkg = s.optString("pkg", "")
         val m = (match ?: "").trim().lowercase()
         var best: AccessibilityNodeInfo? = null
         var bestScore = 0
-        for (root in roots(svc)) {
+        for (root in targetRoots(svc, pkg)) {
             var counter = 0
             walk(root, 0) { n ->
                 val nid = n.viewIdResourceName ?: ""
@@ -217,21 +229,23 @@ object LabTools {
             }
         }
         val b = best
-        if (b != null) return clickNode(svc, b)
-        if (m.isEmpty()) {
-            val l = s.optInt("l", -1)
-            val r = s.optInt("r", -1)
-            val tp = s.optInt("tp", -1)
-            val bt = s.optInt("b", -1)
-            if (l >= 0 && r > l && tp >= 0 && bt > tp) {
-                val sw = s.optInt("sw", 0)
-                val sh = s.optInt("sh", 0)
-                val dm = svc.resources.displayMetrics
-                val fx = if (sw > 0) dm.widthPixels.toFloat() / sw else 1f
-                val fy = if (sh > 0) dm.heightPixels.toFloat() / sh else 1f
-                return tap(svc, (l + r) / 2f * fx, (tp + bt) / 2f * fy)
-            }
+        if (b != null && bestScore >= 45) return clickNode(svc, b)
+        // Last resort either way: the recorded screen position. A wrong element beats
+        // reporting "could not click" outright, and for the very first step of a replay
+        // (before anything has moved) it is usually still exactly right.
+        val l = s.optInt("l", -1)
+        val r = s.optInt("r", -1)
+        val tp = s.optInt("tp", -1)
+        val bt = s.optInt("b", -1)
+        if (l >= 0 && r > l && tp >= 0 && bt > tp) {
+            val sw = s.optInt("sw", 0)
+            val sh = s.optInt("sh", 0)
+            val dm = svc.resources.displayMetrics
+            val fx = if (sw > 0) dm.widthPixels.toFloat() / sw else 1f
+            val fy = if (sh > 0) dm.heightPixels.toFloat() / sh else 1f
+            if (tap(svc, (l + r) / 2f * fx, (tp + bt) / 2f * fy)) return true
         }
+        if (b != null) return clickNode(svc, b)
         return false
     }
 
@@ -239,9 +253,10 @@ object LabTools {
         val s = JSONObject(stepJson)
         val id = s.optString("id", "")
         val cls = s.optString("cls", "")
+        val pkg = s.optString("pkg", "")
         var best: AccessibilityNodeInfo? = null
         var bestScore = 0
-        for (root in roots(svc)) {
+        for (root in targetRoots(svc, pkg)) {
             walk(root, 0) { n ->
                 if (n.isEditable && n.isVisibleToUser) {
                     var score = 1

@@ -69,6 +69,7 @@ class MainActivity : FlutterActivity() {
         CallBridge.register(flutterEngine, this)
         TelegramBridge.register(flutterEngine, this)
         ClockBridge.register(flutterEngine, applicationContext)
+        IrBridge.register(flutterEngine, applicationContext)
         try { LabBridge.register(flutterEngine, applicationContext) } catch (t: Throwable) { }
     }
 

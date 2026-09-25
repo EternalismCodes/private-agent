@@ -12,8 +12,10 @@ import 'task_executor.dart';
 import 'ai_service.dart';
 import 'weather_service.dart';
 import 'youtube_service.dart';
+import 'whatsapp_service.dart';
 import '../lab/lab_vision.dart';
 import '../lab/teach.dart';
+import 'ir_service.dart';
 
 class ActionHandler {
   final AppLauncherService _appLauncher = AppLauncherService();
@@ -25,6 +27,8 @@ class ActionHandler {
   final ScreenAutomationService _screenAutomation = ScreenAutomationService();
   final WeatherService _weather = WeatherService();
   final YoutubeService _youtube = YoutubeService();
+  final IrService _ir = IrService();
+  final WhatsappService _whatsapp = WhatsappService();
 
   ShizukuService get shizuku => _shizuku;
   AppLauncherService get appLauncher => _appLauncher;
@@ -51,7 +55,7 @@ class ActionHandler {
     return s.isEmpty ? null : s;
   }
 
-  static const Set<String> _strict = {'set_alarm', 'set_timer', 'get_weather', 'play_youtube', 'analyze_screen', 'run_taught'};
+  static const Set<String> _strict = {'set_alarm', 'set_timer', 'get_weather', 'play_youtube', 'analyze_screen', 'run_taught', 'send_ir', 'save_ir', 'send_whatsapp'};
   static final RegExp _failed = RegExp(r'^(error|could not|cannot|unable)', caseSensitive: false);
 
   /// Execute an action and return the result
@@ -128,6 +132,30 @@ class ActionHandler {
           final rank = asInt(p['rank']) ?? 1;
           result = await _youtube.play(q, rank: rank < 1 ? 1 : (rank > 10 ? 10 : rank), screen: _screenAutomation);
           if (q.isNotEmpty) noteYoutubeQuery(q);
+          break;
+
+        case 'send_whatsapp':
+          result = await _whatsapp.send(
+            _s(p['contact'] ?? p['to'] ?? p['phone']),
+            _s(p['message']),
+            contacts: _contacts,
+            screen: _screenAutomation,
+          );
+          break;
+
+        case 'send_ir':
+          result = await _ir.send(_s(p['name']));
+          break;
+
+        case 'save_ir':
+          final rawPattern = p['pattern'];
+          List<int> pattern = const [];
+          if (rawPattern is List) {
+            pattern = rawPattern.map((e) => asInt(e) ?? 0).toList();
+          } else if (rawPattern is String) {
+            pattern = rawPattern.split(RegExp(r'[,\s]+')).where((e) => e.isNotEmpty).map((e) => asInt(e) ?? 0).toList();
+          }
+          result = await _ir.save(_s(p['name']), asInt(p['frequency']) ?? 38000, pattern);
           break;
 
         case 'analyze_screen':

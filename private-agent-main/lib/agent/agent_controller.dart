@@ -506,6 +506,9 @@ SIMPLE ACTIONS (one step):
 - get_weather {"location", "days"}: real weather from a weather API (days 1-7)
 - analyze_screen {"question"}: (experimental) take a screenshot and answer about it with the vision model; use when asked to look at / analyse / read the screen or take a screenshot
 - run_taught {"name", "vars"}: (experimental) replay a task the user taught; see TAUGHT TASKS below when present
+- send_whatsapp {"contact", "message"}: sends a WhatsApp message directly and fast (no need for execute_task). "contact" can be a saved contact name or a phone number; write the full message text yourself as usual.
+- send_ir {"name"}: sends a saved infrared remote code by device name (e.g. "ac", "tv", "ac 2")
+- save_ir {"name", "frequency", "pattern"}: saves an infrared code under a device name; frequency in Hz (usually 38000), pattern is the list of on/off microsecond durations the user gives you
 - set_volume {"level"} and set_brightness {"level"} (0-100)
 - open_url {"url"}
 - send_email {"to", "subject", "body"}
@@ -524,7 +527,7 @@ MEMORY AND AUTOMATION:
 RULES:
 - If a request has several steps ("open X and do Y"), use execute_task or plan_and_execute, never open_app.
 - Prefer execute_task (one app, one flow) and use plan_and_execute only when the job truly spans several different apps. Both are slower when they are used unnecessarily.
-- To play or watch something on YouTube use play_youtube, not execute_task. For any weather question use get_weather with the place name (ask which place if none was given). Numbers in params must be plain numbers.
+- Use play_youtube ONLY to start playing a specific song/video by name (e.g. "play lofi beats", "play the top result"). For anything else in the YouTube app — subscriptions, trending, search without playing, browsing, liking, commenting — use execute_task; play_youtube cannot navigate tabs or menus. For any weather question use get_weather with the place name (ask which place if none was given). Numbers in params must be plain numbers.
 - Ask a short clarifying question in plain text instead of guessing when a required detail (who, what, when) is missing.
 - Do not claim you did something unless you used an action.
 - When the request needs something WRITTEN (a message, reply, caption, summary, explanation...) as part of a device action, write the actual, complete content yourself and put it in the goal — do not shorten it to the topic words. "send mom information about how AI is useful on WhatsApp" is not the goal "send mom info about how AI is useful"; the goal must contain the full message you composed, e.g. execute_task {"goal": "Open WhatsApp, open the chat with Mom, and send this message: \\"AI is useful because it can...\\" [your full composed message]"}. The step that actually types the message (later, inside execute_task) will only have your composed text to work with — if you don't write it here, it never gets written.''';
@@ -767,7 +770,8 @@ Examples:
   Future<QuickLinkClassification> _classifyForQuickLink(String prompt) async {
     try {
       final resp = await ctx.ai.sendMessage(
-        '$_classifySystemPrompt\n\nUser request:\n$prompt',
+        _classifySystemPrompt,
+        prompt,
         isAgentMode: true,
       );
       final text = resp.trim();
@@ -1058,11 +1062,12 @@ Examples:
       onProgress: ui.onProgress,
     );
     final details = result.details ?? '';
-    final useDetails = const {'get_weather', 'analyze_screen'}.contains(action.action) && result.success && details.isNotEmpty;
-    final text = useDetails
-        ? details
-        : result.success
-        ? (action.response.isNotEmpty ? action.response : (details.isEmpty ? 'Done.' : details))
+    // Device actions report what actually happened in `details`; the model's
+    // `response` is only a pre-written guess made before execution ran, so it
+    // must never override a real result — that was masking failed/partial
+    // steps as "done".
+    final text = result.success
+        ? (details.isNotEmpty ? details : (action.response.isNotEmpty ? action.response : 'Done.'))
         : '⚠️ $details';
     ui.addMessage(
       ChatMessage(role: 'assistant', content: text, actionResult: result, mode: AgentMode.auto.id),

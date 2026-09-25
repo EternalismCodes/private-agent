@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../services/ai_service.dart';
+import '../services/ir_service.dart';
 import '../services/app_launcher_service.dart';
 import '../services/screen_automation_service.dart';
 import 'lab_channel.dart';
@@ -23,6 +24,9 @@ class LabScreen extends StatefulWidget {
 class _LabScreenState extends State<LabScreen> with WidgetsBindingObserver {
   final _prefs = LabPrefs.instance;
   final _teach = LabTeach.instance;
+  final _ir = IrService();
+  List<IrCode> _irCodes = [];
+  bool _hasIr = true;
   final _model = TextEditingController();
   final _base = TextEditingController();
   final _key = TextEditingController();
@@ -44,6 +48,8 @@ class _LabScreenState extends State<LabScreen> with WidgetsBindingObserver {
     _base.text = _prefs.vlmBaseUrl;
     _key.text = _prefs.vlmKey;
     LabChannel.onStopped = _onStopped;
+    _irCodes = await _ir.list();
+    _hasIr = await _ir.hasEmitter();
     _recording = await LabChannel.recActive();
     if (mounted) setState(() => _ready = true);
   }
@@ -238,6 +244,39 @@ class _LabScreenState extends State<LabScreen> with WidgetsBindingObserver {
     _snack(r);
   }
 
+  Future<void> _addIrCode() async {
+    final name = TextEditingController();
+    final freq = TextEditingController(text: '38000');
+    final pattern = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Save IR code'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: name, decoration: const InputDecoration(labelText: 'Device name', hintText: 'ac, tv, ac 2 ...')),
+            TextField(controller: freq, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Carrier frequency (Hz)')),
+            TextField(
+              controller: pattern,
+              maxLines: 4,
+              decoration: const InputDecoration(labelText: 'Pattern (comma-separated on/off microseconds)', hintText: '9000,4500,560,560,560,1690,...'),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final p = pattern.text.split(RegExp(r'[,\s]+')).where((e) => e.isNotEmpty).map((e) => int.tryParse(e) ?? 0).toList();
+    final msg = await _ir.save(name.text, int.tryParse(freq.text) ?? 38000, p);
+    _snack(msg);
+    _irCodes = await _ir.list();
+    if (mounted) setState(() {});
+  }
+
   Future<void> _testVision() async {
     await _savePrefs();
     setState(() => _testing = true);
@@ -329,6 +368,41 @@ class _LabScreenState extends State<LabScreen> with WidgetsBindingObserver {
                     icon: const Icon(Icons.image_search_rounded),
                     label: Text(_testing ? 'Testing…' : 'Test vision on my screen'),
                   ),
+                ),
+              ]),
+            ),
+          const Divider(),
+          ListTile(
+            title: const Text('Infrared (IR) codes', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: Text(_hasIr
+                ? 'Send a saved remote code by device name (ac, tv, ac 2 ...). Most phones have no IR blaster; this only works on ones that do.'
+                : 'This phone has no built-in IR blaster, so this cannot work here.'),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(onPressed: _addIrCode, icon: const Icon(Icons.add), label: const Text('Save an IR code')),
+            ),
+          ),
+          for (final c in _irCodes)
+            ListTile(
+              leading: const Icon(Icons.settings_remote_outlined),
+              title: Text(c.name),
+              subtitle: Text('${c.pattern.length} pulses · ${c.frequency}Hz'),
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                IconButton(
+                  icon: const Icon(Icons.send_outlined),
+                  tooltip: 'Test send',
+                  onPressed: () async => _snack(await _ir.send(c.name)),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: () async {
+                    await _ir.remove(c.name);
+                    _irCodes = await _ir.list();
+                    if (mounted) setState(() {});
+                  },
                 ),
               ]),
             ),

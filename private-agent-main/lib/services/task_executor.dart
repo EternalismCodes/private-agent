@@ -245,6 +245,7 @@ Rules:
     int consecutiveFailures = 0;
     String lastFailedAction = '';
     int labRescues = 0;
+    int consecutiveScrolls = 0;
     int totalTokens = 0;
     final List<ActionStep> executedSteps = [];
 
@@ -596,6 +597,27 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
 
         case 'scroll':
           final direction = params['direction'] as String? ?? 'down';
+          // Prefer a look from the vision model over blind scrolling once
+          // scrolling alone hasn't found the target — scrolling is a guess,
+          // the vision model can usually just point straight at what's needed.
+          if (consecutiveScrolls >= 1 && labRescues < 3) {
+            labRescues++;
+            final acted = await LabVision.instance.rescue(
+              goal: userGoal,
+              failedAction: 'scroll $direction (repeated, not finding the target)',
+              screen: _screenService,
+              ai: _aiService,
+              report: (m) => _report(m),
+            );
+            if (acted) {
+              consecutiveScrolls = 0;
+              consecutiveFailures = 0;
+              success = true;
+              actionResult = 'Used the vision model instead of scrolling further';
+              break;
+            }
+          }
+          consecutiveScrolls++;
           success = await _performScroll(direction);
           actionResult = success
               ? 'Scrolled $direction'
@@ -653,6 +675,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
           consecutiveFailures = 1;
           lastFailedAction = action;
         }
+
+        if (action != 'scroll') consecutiveScrolls = 0;
 
         // Experimental: vision-model rescue when stuck (no-op unless enabled).
         if (consecutiveFailures >= 3 && labRescues < 3) {
