@@ -71,5 +71,5 @@ flutter {
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     // Wake-word ("hotword") detection — tiny on-device keyword spotter, not full speech recognition.
-    implementation("ai.picovoice:porcupine-android:3.0.5")
+    implementation("ai.picovoice:porcupine-android:4.0.2")
 }
