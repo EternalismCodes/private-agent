@@ -101,7 +101,7 @@ class BackupService {
       type: FileType.custom,
       allowedExtensions: ['json'],
     );
-    final path = result?.files.single.path;
+    final path = result.isEmpty ? null : result.single.path;
     return path == null ? null : File(path);
   }
 
