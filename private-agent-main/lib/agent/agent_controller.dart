@@ -532,7 +532,7 @@ MEMORY AND AUTOMATION:
 
 RULES:
 - Always check the SIMPLE ACTIONS list first: if one of them already does exactly what was asked (sending a WhatsApp message, playing something on YouTube or Netflix, taking a photo, setting an alarm, ...), use it directly instead of execute_task or plan_and_execute. Those two are for jobs nothing else covers — using them for something a simple action already does is only slower, never more capable.
-- If a request has several steps ("open X and do Y"), use execute_task or plan_and_execute, never open_app.
+- If a request has several steps ("open X and do Y"), use execute_task or plan_and_execute, never open_app. For example "go to Flipkart and click on Minutes" is execute_task {"goal": "Open Flipkart and open the Minutes section"}, NOT open_app — opening the app is only the first half of what was asked.
 - Prefer execute_task (one app, one flow) and use plan_and_execute only when the job truly spans several different apps. Both are slower when they are used unnecessarily.
 - Use play_youtube ONLY to start playing a specific song/video by name (e.g. "play lofi beats", "play the top result"). For anything else in the YouTube app — subscriptions, trending, search without playing, browsing, liking, commenting — use execute_task; play_youtube cannot navigate tabs or menus. For any weather question use get_weather with the place name (ask which place if none was given). Numbers in params must be plain numbers.
 - Ask a short clarifying question in plain text instead of guessing when a required detail (who, what, when) is missing.
@@ -575,7 +575,7 @@ RULES:
       throw Exception('The model finished without a visible answer. Try again.');
     }
 
-    final action = ctx.ai.parseAction(answer);
+    final action = _fixUnderscopedOpenApp(ctx.ai.parseAction(answer), text);
     if (action == null) {
       message.content = answer;
       ui.refresh();
@@ -659,6 +659,26 @@ RULES:
     r'\b(and|then|in|on|to|for|with|from|at|inside|search|play|send|message|call)\b',
     caseSensitive: false,
   );
+
+  /// The model sometimes reduces a compound request ("go to X and click on
+  /// Y") down to just opening the app, silently dropping everything after
+  /// "and"/"then" — this happened in testing with a request as simple as
+  /// "go to Flipkart and click on Minutes". Rather than trust the model's
+  /// classification to always catch this (the RULES above ask it to, but
+  /// asking isn't a guarantee), this is a deterministic backstop: whenever
+  /// the chosen action is a plain open_app but the user's own words clearly
+  /// asked for more than that, force the fuller action instead.
+  static final RegExp _hasMoreThanOpen = RegExp(r'\b(and|then)\b', caseSensitive: false);
+
+  AgentAction? _fixUnderscopedOpenApp(AgentAction? action, String userText) {
+    if (action == null || action.action != 'open_app') return action;
+    if (!_hasMoreThanOpen.hasMatch(userText)) return action;
+    return AgentAction(
+      action: 'execute_task',
+      params: {'goal': userText},
+      response: action.response.isEmpty ? 'On it.' : action.response,
+    );
+  }
 
   /// A skill the user (or the agent) saved whose name or trigger phrase is
   /// literally in the request runs immediately, with its own instructions

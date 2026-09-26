@@ -10,6 +10,8 @@ import 'task_history_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import '../config/feature_flags.dart';
+import '../services/backup_service.dart';
+import 'dart:io';
 
 class SettingsScreen extends StatefulWidget {
   final AiService aiService;
@@ -45,6 +47,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool _useSystemPrompt = true;
   bool _floatingIconEnabled = false;
   bool _isOverlayPermissionGranted = false;
+  final BackupService _backup = BackupService();
 
   final Map<String, PermissionStatus> _permissions = {};
 
@@ -115,6 +118,86 @@ class _SettingsScreenState extends State<SettingsScreen>
       if (FeatureFlags.floatingOverlayEnabled) {
         _checkOverlayStatus();
       }
+    }
+  }
+
+  Future<void> _exportSettings() async {
+    final result = await _backup.exportAndShare();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result.message)));
+  }
+
+  Future<void> _importSettings() async {
+    final local = await _backup.localBackups();
+    if (!mounted) return;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('Import settings', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.folder_open_rounded),
+              title: const Text('Choose a file…'),
+              subtitle: const Text('From Downloads, Drive, wherever you saved it'),
+              onTap: () => Navigator.pop(ctx, 'pick'),
+            ),
+            if (local.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.restore_rounded),
+                title: Text('Use backup already on this phone (${local.length} found)'),
+                subtitle: Text('Most recent: ${local.first.path.split('/').last}'),
+                onTap: () => Navigator.pop(ctx, 'local'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return;
+
+    File? file;
+    if (choice == 'pick') {
+      file = await _backup.pickBackupFile();
+    } else if (choice == 'local' && local.isNotEmpty) {
+      file = local.first;
+    }
+    if (file == null || !mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Overwrite current settings?'),
+        content: Text('This replaces your current API key, preferences, favorites and skills with what\'s in "${file!.path.split('/').last}". This can\'t be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Import')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final result = await _backup.importFrom(file);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result.message)));
+    if (result.ok) {
+      await widget.aiService.init();
+      if (!mounted) return;
+      setState(() {
+        _apiKeyController.text = widget.aiService.apiKey;
+        _baseUrlController.text = widget.aiService.baseUrl;
+        _modelController.text = widget.aiService.model;
+        _maxSteps = widget.aiService.rawMaxSteps.toDouble();
+        _disableMaxSteps = widget.aiService.disableMaxSteps;
+        _temperature = widget.aiService.temperature;
+        _maxTokensController.text = widget.aiService.maxTokens.toString();
+        _useScreenCompression = widget.aiService.useScreenCompression;
+        _useSystemPrompt = widget.aiService.useSystemPrompt;
+      });
+      _checkPermissions();
     }
   }
 
@@ -798,7 +881,31 @@ class _SettingsScreenState extends State<SettingsScreen>
             children: _buildPermissionTiles(),
           ),
 
-          // 8. Task History Card
+          // 8. Backup & restore
+          _buildSettingsCard(
+            icon: Icons.import_export_rounded,
+            title: 'Backup & restore',
+            subtitle: 'Save all your settings to a file, or bring them back',
+            isDark: isDark,
+            children: [
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Export settings'),
+                subtitle: const Text('Saves everything — API key, preferences, favorites, skills — to one file'),
+                leading: const Icon(Icons.upload_file_rounded),
+                onTap: _exportSettings,
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Import settings'),
+                subtitle: const Text('Pick a backup file, or restore one already saved on this phone'),
+                leading: const Icon(Icons.download_rounded),
+                onTap: _importSettings,
+              ),
+            ],
+          ),
+
+          // 8b. Task History Card
           _buildSettingsCard(
             icon: Icons.history_outlined,
             title: 'Execution logs',
