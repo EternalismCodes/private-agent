@@ -98,7 +98,7 @@ class BackupService {
   /// Drive-synced folders, wherever they saved or received it).
   Future<File?> pickBackupFile() async {
     final result = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['json']);
-    final path = result?.files.single.path;
+    final path = result.isEmpty ? null : result.single.path;
     return path == null ? null : File(path);
   }
 
