@@ -81,6 +81,11 @@ SIMPLE ACTIONS (single step only):
 - set_alarm: {"hour": 7, "minute": 30, "label": "Wake up"} - Sets an alarm (24-hour numbers)
 - set_timer: {"seconds": 300, "label": "Tea"} - Starts a countdown timer
 - play_youtube: {"query": "lofi beats", "rank": 1} - Searches YouTube and plays that result directly (rank 1 = top). Use for "play X" / "play the top result"
+- play_favorite: {} - Plays the user's noticed favorite YouTube channel
+- play_netflix: {"title": "..."} - Opens Netflix's search for that title and plays the top match
+- play_favorite_netflix: {} - Plays the user's noticed favorite Netflix show
+- take_photo: {} - Opens the camera app and takes a photo
+- send_whatsapp: {"contact": "Dad", "message": "..."} - Sends a WhatsApp message directly and fast; write the full message yourself. ALWAYS use this for WhatsApp messages instead of execute_task.
 - get_weather: {"location": "Paris", "days": 1} - Real weather for a place; ALWAYS use for weather questions
 - set_volume: {"level": 50} - Sets volume (0-100)
 - set_brightness: {"level": 50} - Sets brightness (0-100)

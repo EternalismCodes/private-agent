@@ -1,6 +1,7 @@
 import 'dart:async';
 import '../models/agent_action.dart';
 import '../services/notification_service.dart';
+import '../services/location_service.dart';
 import '../services/task_executor.dart';
 import '../services/task_history_logger.dart';
 import 'agent_context.dart';
@@ -448,6 +449,8 @@ class PlanRunner {
     final b = StringBuffer();
     b.writeln('\nCONTEXT FROM THE PLANNER:');
     b.writeln('Overall goal: ${plan.goal}');
+    final locationLine = await LocationService.instance.peekContextLine();
+    if (locationLine.isNotEmpty) b.writeln(locationLine);
     final done = plan.steps
         .where((s) => s.status == StepStatus.done)
         .map((s) => '- ${s.title}${s.result.isEmpty ? '' : ' → ${_clip(s.result, 120)}'}')

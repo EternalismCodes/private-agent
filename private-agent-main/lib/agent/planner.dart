@@ -22,12 +22,13 @@ Each step is an object:
 - "action" and "params": only for kind "action".
 - "sensitive": true when the step sends a message, places a call, spends money, deletes or changes important data, posts publicly, or installs/uninstalls something.
 
-Direct actions: open_app {"app_name"}, make_call {"contact_name" or "phone_number"}, send_sms {"contact_name" or "phone_number","message"}, search_contact {"query"}, set_alarm {"hour","minute","label"}, set_timer {"seconds","label"}, play_youtube {"query","rank"}, get_weather {"location","days"}, set_volume {"level"}, set_brightness {"level"}, open_url {"url"}, send_email {"to","subject","body"}, read_screen {}, remember {"fact"}, wait {"seconds"}.
+Direct actions: open_app {"app_name"}, make_call {"contact_name" or "phone_number"}, send_sms {"contact_name" or "phone_number","message"}, send_whatsapp {"contact","message"}, search_contact {"query"}, set_alarm {"hour","minute","label"}, set_timer {"seconds","label"}, play_youtube {"query","rank"}, play_favorite {}, play_netflix {"title"}, play_favorite_netflix {}, take_photo {}, get_weather {"location","days"}, set_volume {"level"}, set_brightness {"level"}, open_url {"url"}, send_email {"to","subject","body"}, read_screen {}, remember {"fact"}, wait {"seconds"}.
 
 Rules:
-- Use "action" only when it exactly fits; otherwise use "ui".
+- Use "action" only when it exactly fits; otherwise use "ui". In particular, sending a WhatsApp message is ALWAYS the send_whatsapp action (write the full composed message text into "message" yourself), never a "ui" step — a "ui" step for WhatsApp re-does slowly, by tapping through the screen, exactly what send_whatsapp already does directly.
 - If the goal needs information from the phone or the web, end with a "respond" step that reports it.
 - Never invent contact details, passwords or facts. If a login is needed and a matching saved account exists, mention its label in the step title (for example "log in with the saved Netflix account").
+- For a "near me" / "nearest X" goal, write the actual current location (given in the context above, when present) into the step title instead of leaving it as "near me".
 - Do not add steps that were not asked for.
 
 Return ONLY JSON, no markdown:

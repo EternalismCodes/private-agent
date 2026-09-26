@@ -121,6 +121,8 @@ class _SettingsScreenState extends State<SettingsScreen>
   Future<void> _checkPermissions() async {
     final perms = {
       'Microphone': Permission.microphone,
+      'Camera': Permission.camera,
+      'Location': Permission.locationWhenInUse,
       'Contacts': Permission.contacts,
       'Phone': Permission.phone,
       'SMS': Permission.sms,
@@ -881,6 +883,8 @@ class _SettingsScreenState extends State<SettingsScreen>
   List<Widget> _buildPermissionTiles() {
     final permissionMap = {
       'Microphone': Permission.microphone,
+      'Camera': Permission.camera,
+      'Location': Permission.locationWhenInUse,
       'Contacts': Permission.contacts,
       'Phone': Permission.phone,
       'SMS': Permission.sms,
@@ -889,6 +893,8 @@ class _SettingsScreenState extends State<SettingsScreen>
 
     final icons = {
       'Microphone': Icons.mic,
+      'Camera': Icons.camera_alt,
+      'Location': Icons.location_on,
       'Contacts': Icons.contacts,
       'Phone': Icons.phone,
       'SMS': Icons.sms,

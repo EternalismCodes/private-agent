@@ -17,38 +17,52 @@ class WeatherService {
     96: 'thunderstorm with hail', 99: 'thunderstorm with hail',
   };
 
-  Future<String> forecast(String location, {int days = 1, bool fahrenheit = false}) async {
+  Future<String> forecast(
+    String location, {
+    int days = 1,
+    bool fahrenheit = false,
+    double? lat,
+    double? lon,
+    String? placeLabel,
+  }) async {
     final query = location.trim();
-    if (query.isEmpty) return 'Which city should I check the weather for?';
+    if (query.isEmpty && lat == null) return 'Which city should I check the weather for?';
     final n = days < 1 ? 1 : (days > 7 ? 7 : days);
     try {
-      final parts = query.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-      final hint = parts.skip(1).join(' ').toLowerCase();
-      final g = await http
-          .get(Uri.parse('$_geoUrl?name=${Uri.encodeQueryComponent(parts.first)}&count=10&language=en&format=json'))
-          .timeout(_timeout);
-      if (g.statusCode != 200) return 'Could not reach the weather service (${g.statusCode}).';
-      final geo = jsonDecode(g.body);
-      final results = geo is Map && geo['results'] is List ? geo['results'] as List : const [];
-      if (results.isEmpty) return 'Could not find a place called "$query".';
-      Map place = results.first as Map;
-      if (hint.isNotEmpty) {
-        for (final r in results) {
-          if (r is! Map) continue;
-          final hay = '${r['country']} ${r['admin1']} ${r['country_code']}'.toLowerCase();
-          if (hint.split(' ').where((w) => w.length > 1).every((w) => hay.contains(w))) {
-            place = r;
-            break;
+      Map place = const {};
+      double? resolvedLat = lat;
+      double? resolvedLon = lon;
+      if (resolvedLat == null || resolvedLon == null) {
+        final parts = query.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+        final hint = parts.skip(1).join(' ').toLowerCase();
+        final g = await http
+            .get(Uri.parse('$_geoUrl?name=${Uri.encodeQueryComponent(parts.first)}&count=10&language=en&format=json'))
+            .timeout(_timeout);
+        if (g.statusCode != 200) return 'Could not reach the weather service (${g.statusCode}).';
+        final geo = jsonDecode(g.body);
+        final results = geo is Map && geo['results'] is List ? geo['results'] as List : const [];
+        if (results.isEmpty) return 'Could not find a place called "$query".';
+        place = results.first as Map;
+        if (hint.isNotEmpty) {
+          for (final r in results) {
+            if (r is! Map) continue;
+            final hay = '${r['country']} ${r['admin1']} ${r['country_code']}'.toLowerCase();
+            if (hint.split(' ').where((w) => w.length > 1).every((w) => hay.contains(w))) {
+              place = r;
+              break;
+            }
           }
         }
+        resolvedLat = asDouble(place['latitude']);
+        resolvedLon = asDouble(place['longitude']);
       }
-      final lat = asDouble(place['latitude']);
-      final lon = asDouble(place['longitude']);
-      if (lat == null || lon == null) return 'Could not locate "$query".';
+      final lat0 = resolvedLat;
+      final lon0 = resolvedLon;
+      if (lat0 == null || lon0 == null) return 'Could not locate "$query".';
 
       final units = fahrenheit ? '&temperature_unit=fahrenheit&wind_speed_unit=mph' : '';
       final w = await http
-          .get(Uri.parse('$_wxUrl?latitude=$lat&longitude=$lon'
+          .get(Uri.parse('$_wxUrl?latitude=$lat0&longitude=$lon0'
               '&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m'
               '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max'
               '&forecast_days=$n&timezone=auto$units'))
@@ -60,10 +74,12 @@ class WeatherService {
       final tu = fahrenheit ? '°F' : '°C';
       final wu = fahrenheit ? 'mph' : 'km/h';
       String t(dynamic v) => asDouble(v)?.round().toString() ?? '?';
-      final label = <String>{
-        for (final e in [place['name'], place['admin1'], place['country']])
-          if (e != null && '$e'.isNotEmpty) '$e',
-      }.join(', ');
+      final label = (placeLabel != null && placeLabel.isNotEmpty)
+          ? placeLabel
+          : <String>{
+              for (final e in [place['name'], place['admin1'], place['country']])
+                if (e != null && '$e'.isNotEmpty) '$e',
+            }.join(', ');
 
       final b = StringBuffer('Weather in $label: ');
       if (cur != null) {

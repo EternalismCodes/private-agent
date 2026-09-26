@@ -505,11 +505,14 @@ SIMPLE ACTIONS (one step):
 - set_alarm {"hour", "minute", "label"} (24-hour, plain numbers)
 - set_timer {"seconds", "label"} (plain number of seconds)
 - play_youtube {"query", "rank"}: search YouTube and start playing that result (rank 1 = top). Omit query to reuse the last YouTube search.
-- get_weather {"location", "days"}: real weather from a weather API (days 1-7)
+- get_weather {"location", "days"}: real weather from a weather API (days 1-7). Omit "location" (or use "here") to use the phone's current location — never ask the user where they are just for weather.
 - analyze_screen {"question"}: (experimental) take a screenshot and answer about it with the vision model; use when asked to look at / analyse / read the screen or take a screenshot
 - run_taught {"name", "vars"}: (experimental) replay a task the user taught; see TAUGHT TASKS below when present
 - play_favorite {}: plays something from the user's noticed favorite YouTube channel (a channel that has come up in 2+ separate plays). Use for "play something I like" / "play my favorite" / "play something good" with no specific title given.
-- send_whatsapp {"contact", "message"}: sends a WhatsApp message directly and fast (no need for execute_task). "contact" can be a saved contact name or a phone number; write the full message text yourself as usual.
+- play_netflix {"title"}: opens Netflix's own search for that title and plays the top match.
+- play_favorite_netflix {}: plays the user's noticed favorite Netflix show (a title that has come up in 2+ separate Netflix plays). Use for "play my favorite show/series on Netflix" with no specific title given.
+- take_photo {}: opens the phone's camera app and takes a photo, then reports where it was saved. Use for "take a photo/picture", "use the camera".
+- send_whatsapp {"contact", "message"}: sends a WhatsApp message directly and fast (no need for execute_task). "contact" can be a saved contact name or a phone number; write the full message text yourself as usual. ALWAYS use this — never execute_task or plan_and_execute — for "message/text/tell <contact> ... on WhatsApp", even when you have to compose the message text yourself; execute_task is far slower here and send_whatsapp already does everything execute_task would (finds the contact, opens the chat, sends it).
 - send_ir {"name"}: sends a saved infrared remote code by device name (e.g. "ac", "tv", "ac 2")
 - save_ir {"name", "frequency", "pattern"}: saves an infrared code under a device name; frequency in Hz (usually 38000), pattern is the list of on/off microsecond durations the user gives you
 - set_volume {"level"} and set_brightness {"level"} (0-100)
@@ -528,10 +531,12 @@ MEMORY AND AUTOMATION:
 - schedule_task {"goal": "...", "when": "YYYY-MM-DD HH:MM", "repeat": "none | daily | weekdays | weekly"}: run a task later. "when" is the user's local time in 24-hour format; work it out from the current date and time.
 
 RULES:
+- Always check the SIMPLE ACTIONS list first: if one of them already does exactly what was asked (sending a WhatsApp message, playing something on YouTube or Netflix, taking a photo, setting an alarm, ...), use it directly instead of execute_task or plan_and_execute. Those two are for jobs nothing else covers — using them for something a simple action already does is only slower, never more capable.
 - If a request has several steps ("open X and do Y"), use execute_task or plan_and_execute, never open_app.
 - Prefer execute_task (one app, one flow) and use plan_and_execute only when the job truly spans several different apps. Both are slower when they are used unnecessarily.
 - Use play_youtube ONLY to start playing a specific song/video by name (e.g. "play lofi beats", "play the top result"). For anything else in the YouTube app — subscriptions, trending, search without playing, browsing, liking, commenting — use execute_task; play_youtube cannot navigate tabs or menus. For any weather question use get_weather with the place name (ask which place if none was given). Numbers in params must be plain numbers.
 - Ask a short clarifying question in plain text instead of guessing when a required detail (who, what, when) is missing.
+- For "nearest X" / "X near me" / "X nearby" requests (a cafe, a pharmacy, directions, ...), use execute_task and write the CURRENT LOCATION (given above, when present) into the goal yourself, e.g. execute_task {"goal": "Open Google Maps and search for cafes near Bhatpara, West Bengal, India, then open the top result"} — do not ask the user for their location or leave the goal as just "near me" if a current location is available above.
 - Do not claim you did something unless you used an action.
 - When the request needs something WRITTEN (a message, reply, caption, summary, explanation...) as part of a device action, write the actual, complete content yourself and put it in the goal — do not shorten it to the topic words. "send mom information about how AI is useful on WhatsApp" is not the goal "send mom info about how AI is useful"; the goal must contain the full message you composed, e.g. execute_task {"goal": "Open WhatsApp, open the chat with Mom, and send this message: \\"AI is useful because it can...\\" [your full composed message]"}. The step that actually types the message (later, inside execute_task) will only have your composed text to work with — if you don't write it here, it never gets written.''';
 

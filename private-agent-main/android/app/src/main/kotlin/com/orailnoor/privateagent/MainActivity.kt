@@ -15,12 +15,19 @@ import android.view.WindowManager
 import android.view.View
 import android.widget.Button
 import android.net.Uri
+import android.provider.MediaStore
+import androidx.core.content.FileProvider
+import java.io.File
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.privateagent/accessibility"
     private val EVENT_CHANNEL = "com.privateagent/accessibility_events"
+    private val CAMERA_CHANNEL = "com.privateagent/camera"
+    private val REQUEST_TAKE_PHOTO = 4271
     private var eventSink: EventChannel.EventSink? = null
     private var overlayView: View? = null
+    private var pendingPhotoResult: MethodChannel.Result? = null
+    private var pendingPhotoPath: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,12 +72,75 @@ class MainActivity : FlutterActivity() {
         )
 
         registerAccessibilityChannel(flutterEngine, this)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CAMERA_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "takePhoto" -> startPhotoCapture(result)
+                    else -> result.notImplemented()
+                }
+            }
         SchedulerBridge.register(flutterEngine, applicationContext)
         CallBridge.register(flutterEngine, this)
         TelegramBridge.register(flutterEngine, this)
         ClockBridge.register(flutterEngine, applicationContext)
         IrBridge.register(flutterEngine, applicationContext)
         try { LabBridge.register(flutterEngine, applicationContext) } catch (t: Throwable) { }
+    }
+
+    /**
+     * Launches the device's own Camera app via the standard capture intent
+     * (rather than accessibility-tapping an arbitrary OEM camera UI, whose
+     * shutter button is frequently a custom view with no reliable click
+     * semantics — the same kind of element Teach mode can miss). Requires
+     * this Activity to actually be in front, same as any other tool-use
+     * action taken while PrivateAgent isn't the foreground app.
+     */
+    private fun startPhotoCapture(result: MethodChannel.Result) {
+        try {
+            val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+            if (intent.resolveActivity(packageManager) == null) {
+                result.success(null)
+                return
+            }
+            val dir = File(cacheDir, "captures").apply { mkdirs() }
+            val file = File(dir, "IMG_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, uri)
+            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            // Compatibility with camera apps on older/odd builds that don't
+            // honour the intent flags above for a content:// URI.
+            for (info in packageManager.queryIntentActivities(intent, 0)) {
+                grantUriPermission(
+                    info.activityInfo.packageName, uri,
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            if (pendingPhotoResult != null) {
+                // A previous capture never resolved (shouldn't normally happen since
+                // the channel call is awaited end-to-end) — don't leak it silently.
+                pendingPhotoResult?.success(null)
+            }
+            pendingPhotoResult = result
+            pendingPhotoPath = file.absolutePath
+            startActivityForResult(intent, REQUEST_TAKE_PHOTO)
+        } catch (t: Throwable) {
+            result.error("CAMERA_ERROR", t.message, null)
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_TAKE_PHOTO) return
+        val pending = pendingPhotoResult
+        val path = pendingPhotoPath
+        pendingPhotoResult = null
+        pendingPhotoPath = null
+        if (pending == null) return
+        if (resultCode == RESULT_OK && path != null && File(path).exists() && File(path).length() > 0) {
+            pending.success(path)
+        } else {
+            pending.success(null)
+        }
     }
 
     companion object {

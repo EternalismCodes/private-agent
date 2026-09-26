@@ -12,11 +12,14 @@ import 'task_executor.dart';
 import 'ai_service.dart';
 import 'weather_service.dart';
 import 'youtube_service.dart';
+import 'netflix_service.dart';
 import 'whatsapp_service.dart';
 import '../lab/lab_vision.dart';
 import '../lab/teach.dart';
 import 'ir_service.dart';
 import 'favorites_service.dart';
+import 'camera_service.dart';
+import 'location_service.dart';
 
 class ActionHandler {
   final AppLauncherService _appLauncher = AppLauncherService();
@@ -28,9 +31,12 @@ class ActionHandler {
   final ScreenAutomationService _screenAutomation = ScreenAutomationService();
   final WeatherService _weather = WeatherService();
   final YoutubeService _youtube = YoutubeService();
+  final NetflixService _netflix = NetflixService();
   final IrService _ir = IrService();
-  final FavoritesService _favorites = FavoritesService();
+  final FavoritesService _favorites = const FavoritesService(domain: 'youtube');
+  final FavoritesService _netflixFavorites = const FavoritesService(domain: 'netflix');
   final WhatsappService _whatsapp = WhatsappService();
+  final CameraService _camera = CameraService();
 
   ShizukuService get shizuku => _shizuku;
   AppLauncherService get appLauncher => _appLauncher;
@@ -57,7 +63,7 @@ class ActionHandler {
     return s.isEmpty ? null : s;
   }
 
-  static const Set<String> _strict = {'set_alarm', 'set_timer', 'get_weather', 'play_youtube', 'play_favorite', 'analyze_screen', 'run_taught', 'send_ir', 'save_ir', 'send_whatsapp'};
+  static const Set<String> _strict = {'set_alarm', 'set_timer', 'get_weather', 'play_youtube', 'play_favorite', 'play_netflix', 'play_favorite_netflix', 'analyze_screen', 'run_taught', 'send_ir', 'save_ir', 'send_whatsapp', 'take_photo'};
   static final RegExp _failed = RegExp(r'^(error|could not|cannot|unable)', caseSensitive: false);
 
   /// Execute an action and return the result
@@ -121,11 +127,28 @@ class ActionHandler {
           break;
 
         case 'get_weather':
-          result = await _weather.forecast(
-            _s(p['location'] ?? p['city'] ?? p['place']),
-            days: asInt(p['days']) ?? 1,
-            fahrenheit: _s(p['unit']).toLowerCase().startsWith('f'),
-          );
+          final place = _s(p['location'] ?? p['city'] ?? p['place']);
+          if (place.isEmpty || kHereLocationRe.hasMatch(place)) {
+            final loc = await LocationService.instance.current();
+            if (loc == null) {
+              result = 'I could not get your current location (check that Location is turned on and PrivateAgent has permission), and no place was given.';
+              break;
+            }
+            result = await _weather.forecast(
+              '',
+              days: asInt(p['days']) ?? 1,
+              fahrenheit: _s(p['unit']).toLowerCase().startsWith('f'),
+              lat: loc.lat,
+              lon: loc.lon,
+              placeLabel: loc.label,
+            );
+          } else {
+            result = await _weather.forecast(
+              place,
+              days: asInt(p['days']) ?? 1,
+              fahrenheit: _s(p['unit']).toLowerCase().startsWith('f'),
+            );
+          }
           break;
 
         case 'play_youtube':
@@ -138,6 +161,30 @@ class ActionHandler {
 
         case 'play_favorite':
           result = await _youtube.playFavorite(favorites: _favorites, screen: _screenAutomation);
+          break;
+
+        case 'play_netflix':
+          final title = _s(p['title'] ?? p['query'] ?? p['show']);
+          result = await _netflix.play(
+            title,
+            screen: _screenAutomation,
+            appLauncher: _appLauncher,
+            shizuku: _shizuku,
+            aiService: aiService,
+            favorites: _netflixFavorites,
+            onProgress: onProgress,
+          );
+          break;
+
+        case 'play_favorite_netflix':
+          result = await _netflix.playFavorite(
+            favorites: _netflixFavorites,
+            screen: _screenAutomation,
+            appLauncher: _appLauncher,
+            shizuku: _shizuku,
+            aiService: aiService,
+            onProgress: onProgress,
+          );
           break;
 
         case 'send_whatsapp':
@@ -162,6 +209,10 @@ class ActionHandler {
             );
             _currentExecutor = null;
           }
+          break;
+
+        case 'take_photo':
+          result = await _camera.takePhoto();
           break;
 
         case 'send_ir':

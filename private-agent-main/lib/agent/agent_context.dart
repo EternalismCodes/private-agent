@@ -1,6 +1,7 @@
 import 'package:intl/intl.dart';
 import '../services/action_handler.dart';
 import '../services/ai_service.dart';
+import '../services/location_service.dart';
 import 'llm_client.dart';
 import 'memory_service.dart';
 import 'prefs.dart';
@@ -42,6 +43,10 @@ class AgentContext {
     await ensureLoaded();
     final b = StringBuffer();
     b.writeln('Current date and time: $nowText');
+    // Cache-only and instant: never makes a chat turn wait on GPS just in
+    // case it turns out to be about a place; refreshes in the background.
+    final locationLine = await LocationService.instance.peekContextLine();
+    if (locationLine.isNotEmpty) b.writeln(locationLine);
     if (prefs.userName.isNotEmpty) {
       b.writeln('The user\'s name is ${prefs.userName}.');
     }

@@ -1,6 +1,10 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// A thing that has come up repeatedly for one domain (a YouTube channel, a
+/// Netflix show, ...). The field names are historical (from the original
+/// YouTube-only version) but the class is generic: [channel] just holds the
+/// item's name/title.
 class FavoriteChannel {
   final String channel;
   int count;
@@ -13,12 +17,21 @@ class FavoriteChannel {
       FavoriteChannel('${j['channel']}', (j['count'] as num?)?.toInt() ?? 0, '${j['lastVideoId'] ?? ''}', '${j['lastTitle'] ?? ''}');
 }
 
-/// Notices when the same YouTube channel comes up across separate play
-/// requests, so "play something I like" has something real to go on —
-/// nothing is asked for up front, it's just noticed from what actually gets
-/// played.
+/// Notices when the same item (a YouTube channel, a Netflix show, ...) comes
+/// up across separate play requests for a given [domain], so "play something
+/// I like" has something real to go on — nothing is asked for up front, it's
+/// just noticed from what actually gets played.
+///
+/// Each domain keeps its own separate list (a YouTube favorite never bleeds
+/// into "play my favorite on Netflix" and vice versa).
 class FavoritesService {
-  static const String _key = 'yt_favorite_channels_v1';
+  /// 'youtube', 'netflix', etc. Kept for backward compatibility: the
+  /// original YouTube-only storage key is preserved exactly when [domain]
+  /// is 'youtube', so nobody's existing favorites are lost.
+  final String domain;
+  const FavoritesService({this.domain = 'youtube'});
+
+  String get _key => domain == 'youtube' ? 'yt_favorite_channels_v1' : 'favorite_items_v1_$domain';
   static const int _favoriteThreshold = 2;
 
   Future<List<FavoriteChannel>> _load() async {
@@ -39,9 +52,9 @@ class FavoritesService {
     } catch (_) {}
   }
 
-  /// Call after every real, named-query play. No-op for an unknown channel.
-  Future<void> recordPlay(String channel, String videoId, String title) async {
-    final c = channel.trim();
+  /// Call after every real, named-query play. No-op for an unknown item.
+  Future<void> recordPlay(String item, String videoId, String title) async {
+    final c = item.trim();
     if (c.isEmpty) return;
     final list = await _load();
     final existing = list.where((f) => f.channel.toLowerCase() == c.toLowerCase());
@@ -57,7 +70,7 @@ class FavoritesService {
     await _save(list.take(30).toList());
   }
 
-  /// The channel that has come up in 2+ separate plays, if any (highest count first).
+  /// The item that has come up in 2+ separate plays, if any (highest count first).
   Future<FavoriteChannel?> top() async {
     final list = await _load();
     final favorites = list.where((f) => f.count >= _favoriteThreshold).toList();

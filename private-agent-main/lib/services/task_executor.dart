@@ -126,11 +126,15 @@ Rules:
 - When typing in a search box, you MUST click it first, wait a step, and THEN type.
 - After typing a search query, use `press_enter` once. If the screen does not change, click the exact visible suggestion text. Do not repeat the same submit action more than twice.
 - Never scroll or swipe more than three times in a row. After three scrolls, choose the best visible result or take a different action instead of continuing to browse indefinitely.
-- Set is_complete=true ONLY when the task is fully done.
 - If you need to find something by scrolling, scroll and then check the screen again.
 - If you need to open an app (like Wikipedia, Spotify, etc.) and you cannot find it after a couple of scrolls, ASSUME it is not installed. Immediately open Chrome or Google to search for the info on the web instead.
-- If stuck after 3 attempts, set is_complete=true and explain in reasoning.
 - Keep reasoning very brief (1 sentence)
+
+MULTI-PART TASKS:
+- Before your first action, mentally split the TASK into its separate parts wherever it has more than one instruction ("and", "then", "after that", a list, etc.). Keep that checklist in mind on every step.
+- Set is_complete=true ONLY when EVERY part of the TASK is done and visibly confirmed on screen. Finishing the first part of a multi-part task is NOT completion — do not stop there.
+- If one part is giving you trouble, do not give up on the whole task: press_back or press_home and try a different route to it, or move on to a different still-achievable part and come back to the hard one afterwards. Repeating the exact same failed action is not "trying again" — change the element, the approach, or the order.
+- Only treat the task as unfinishable, after real attempts at more than one approach, if the app is missing, a feature isn't available, permission is denied, or the requested information genuinely cannot be found. Even then, set is_complete=true only for what you actually could not do, and your reasoning MUST name exactly which part(s) were completed and which part(s) were not — never describe a partly-done multi-part task as simply "done".
 ''';
 
   String get _systemPrompt {
@@ -814,8 +818,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
                 ? await _screenService.getCompressedScreenDescription(userGoal)
                 : await _screenService.getScreenDescription();
             final vr = await _aiService.sendTaskMessage(
-              'You check whether a phone-automation task actually finished. Reply with ONLY JSON: {"achieved": true or false, "reason": "one short sentence"}. Be strict — only true if the screen clearly shows the task is done.',
-              'TASK: $userGoal\n\nCURRENT SCREEN:\n$postScreen\n\nHas the task been achieved?',
+              'You check whether a phone-automation task actually finished. If the task has several parts, ALL of them must be visibly done, not just the first one. Reply with ONLY JSON: {"achieved": true or false, "reason": "one short sentence"}. Be strict — only true if the screen clearly shows the whole task is done.',
+              'TASK: $userGoal\n\nCURRENT SCREEN:\n$postScreen\n\nHas the task been fully achieved?',
             );
             totalTokens += vr.totalTokens;
             tokensUsed = totalTokens;
@@ -823,13 +827,27 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
             if (vj['achieved'] != true) {
               verifyBounces++;
               final reason = '${vj['reason'] ?? ''}'.trim();
+              // Bounces exhausted and the task still isn't verified as done:
+              // report this as a failed step (not a false success) so the
+              // plan runner's existing retry/re-plan recovery actually gets
+              // a chance to finish the remaining part, instead of the caller
+              // being told the whole task succeeded when it was only partial.
+              if (verifyBounces >= 2) {
+                final msg = 'Stopped short of the goal${reason.isEmpty ? '' : ' — $reason'}.';
+                results.add('Verification: not achieved after checking twice${reason.isEmpty ? '' : ' — $reason'}.');
+                _report(msg);
+                await _logHistory(userGoal, 'Failed', totalTokens, step, results);
+                lastOutcome = TaskOutcome.failed;
+                return msg;
+              }
               results.add('Verification: not yet complete${reason.isEmpty ? '' : ' — $reason'}.');
               _report(reason.isEmpty ? 'Double-checking…' : 'Not quite there yet: $reason');
               previousScreenContent = '';
               continue;
             }
           } catch (_) {
-            // Verification failed to run — trust the model's own claim rather than stall.
+            // Verification itself errored (network/parsing) — trust the
+            // model's own claim rather than stall, since we can't check it.
           }
         }
 
