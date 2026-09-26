@@ -11,6 +11,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import '../config/feature_flags.dart';
 import '../services/backup_service.dart';
+import '../services/hotword_service.dart';
+import 'dart:async';
 import 'dart:io';
 
 class SettingsScreen extends StatefulWidget {
@@ -48,6 +50,11 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool _floatingIconEnabled = false;
   bool _isOverlayPermissionGranted = false;
   final BackupService _backup = BackupService();
+  final HotwordService _hotword = HotwordService();
+  final TextEditingController _hotwordKeyController = TextEditingController();
+  String _hotwordKeyword = 'PORCUPINE';
+  bool _hotwordEnabled = false;
+  bool _hotwordBusy = false;
 
   final Map<String, PermissionStatus> _permissions = {};
 
@@ -62,6 +69,7 @@ class _SettingsScreenState extends State<SettingsScreen>
       text: widget.telegramService.botToken,
     );
     _telegramEnabled = widget.telegramService.isEnabled;
+    unawaited(_loadHotwordSettings());
     _maxSteps = widget.aiService.rawMaxSteps.toDouble();
     _disableMaxSteps = widget.aiService.disableMaxSteps;
     _temperature = widget.aiService.temperature;
@@ -119,6 +127,37 @@ class _SettingsScreenState extends State<SettingsScreen>
         _checkOverlayStatus();
       }
     }
+  }
+
+  Future<void> _loadHotwordSettings() async {
+    final key = await _hotword.accessKey;
+    final kw = await _hotword.keyword;
+    final on = await _hotword.enabled;
+    if (!mounted) return;
+    setState(() {
+      _hotwordKeyController.text = key ?? '';
+      _hotwordKeyword = kw;
+      _hotwordEnabled = on;
+    });
+  }
+
+  Future<void> _toggleHotword(bool value) async {
+    if (_hotwordBusy) return;
+    setState(() => _hotwordBusy = true);
+    if (value) {
+      final err = await _hotword.start(accessKey: _hotwordKeyController.text, keyword: _hotwordKeyword);
+      if (!mounted) return;
+      if (err != null) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      } else {
+        setState(() => _hotwordEnabled = true);
+      }
+    } else {
+      await _hotword.stop();
+      if (!mounted) return;
+      setState(() => _hotwordEnabled = false);
+    }
+    if (mounted) setState(() => _hotwordBusy = false);
   }
 
   Future<void> _exportSettings() async {
@@ -879,6 +918,51 @@ class _SettingsScreenState extends State<SettingsScreen>
             subtitle: 'Required for automation, microphone, and contacts',
             isDark: isDark,
             children: _buildPermissionTiles(),
+          ),
+
+          // Wake word
+          _buildSettingsCard(
+            icon: Icons.hearing_rounded,
+            title: 'Wake word',
+            subtitle: 'Say a word to bring PrivateAgent to front and start listening',
+            isDark: isDark,
+            children: [
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Listen for wake word'),
+                subtitle: Text(_hotwordEnabled
+                    ? 'On — listens in short bursts, fully releasing the mic between them, and pauses near camera/call apps'
+                    : 'Off'),
+                value: _hotwordEnabled,
+                onChanged: _hotwordBusy ? null : _toggleHotword,
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _hotwordKeyController,
+                decoration: const InputDecoration(
+                  labelText: 'Picovoice AccessKey',
+                  helperText: 'Free, from console.picovoice.ai — needed once',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                value: _hotwordKeyword,
+                decoration: const InputDecoration(labelText: 'Wake word', border: OutlineInputBorder()),
+                items: kBuiltInWakeWords
+                    .map((w) => DropdownMenuItem(value: w, child: Text(w[0] + w.substring(1).toLowerCase())))
+                    .toList(),
+                onChanged: (v) => setState(() => _hotwordKeyword = v ?? _hotwordKeyword),
+              ),
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  'A custom phrase (like "Hey Agent") needs training on console.picovoice.ai first — pick one of these built-in words to use it right away.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+            ],
           ),
 
           // 8. Backup & restore

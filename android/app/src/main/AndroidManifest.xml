@@ -153,6 +153,12 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- Duty-cycled wake-word listener -->
+        <service
+            android:name=".HotwordService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <!-- Accessibility Service for screen reading and UI automation -->
         <service
             android:name=".AgentAccessibilityService"

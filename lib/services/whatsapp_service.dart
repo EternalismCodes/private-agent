@@ -7,15 +7,19 @@ import 'screen_automation_service.dart';
 /// back to full UI automation transparently, in the same turn.
 const String kWhatsappFallbackPrefix = 'FALLBACK:';
 
-/// Sends a WhatsApp message the fast way: a wa.me deep link opens the chat with
-/// the message already typed in (no searching contacts or the chat list
-/// through the accessibility UI, which is what made it slow), then a single
-/// tap sends it. Contact-name resolution or an unusual number format can
-/// still fail the fast path — when that happens this returns a
-/// [kWhatsappFallbackPrefix]-prefixed result instead of a hard error, so the
-/// caller can drop back to slow-but-reliable UI automation in the same turn
-/// rather than the model discovering the failure and retrying a step later
-/// (which is what made it feel like it always took the slow path anyway).
+/// Sends a WhatsApp message the fast way. Two fast paths, tried in order:
+///
+///  1. Jump straight to the chat via WhatsApp's own entry in Android's
+///     Contacts Provider (present for anyone WhatsApp has synced) — no
+///     phone number needed at all, so a contact saved with a local-format
+///     number (no country code), spaces, or any other formatting quirk
+///     still works, since we never have to parse their number ourselves.
+///  2. A wa.me deep link with the number pulled from Contacts, for people
+///     who aren't showing up in WhatsApp's own contact data yet.
+///
+/// Either way, only "type the message and tap Send" is left for the
+/// accessibility service to do — the slow part (searching contacts, opening
+/// the chat list, finding the right person) never has to happen.
 class WhatsappService {
   static const List<String> _packages = ['com.whatsapp', 'com.whatsapp.w4b'];
   static const List<int> _newTask = <int>[Flag.FLAG_ACTIVITY_NEW_TASK];
@@ -38,15 +42,40 @@ class WhatsappService {
     return raw.replaceAll(RegExp(r'[^\d+]'), '').replaceFirst(RegExp(r'^\+'), '');
   }
 
-  Future<String?> _open(String digits, String message) async {
-    final url = 'https://wa.me/$digits?text=${Uri.encodeComponent(message)}';
+  Future<String?> _openUri(String uri) async {
     for (final pkg in [..._packages, null]) {
       try {
-        await AndroidIntent(action: 'android.intent.action.VIEW', data: url, package: pkg, flags: _newTask).launch();
+        await AndroidIntent(action: 'android.intent.action.VIEW', data: uri, package: pkg, flags: _newTask).launch();
         return pkg;
       } catch (_) {}
     }
     return null;
+  }
+
+  Future<String?> _open(String digits, String message) =>
+      _openUri('https://wa.me/$digits?text=${Uri.encodeComponent(message)}');
+
+  Future<bool> _waitForWhatsapp(ScreenAutomationService screen) async {
+    for (var i = 0; i < 16; i++) {
+      final pkg = await screen.getCurrentPackage();
+      if (pkg == 'com.whatsapp' || pkg == 'com.whatsapp.w4b') return true;
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+    return false;
+  }
+
+  Future<bool> _typeAndSend(ScreenAutomationService screen, String message) async {
+    var typed = false;
+    for (var attempt = 0; attempt < 4 && !typed; attempt++) {
+      typed = await screen.typeText(message, fieldHint: 'Message');
+      if (!typed) await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+    if (!typed) return false;
+    for (var attempt = 0; attempt < 6; attempt++) {
+      if (await screen.clickByText('Send')) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+    }
+    return false;
   }
 
   Future<String> send(
@@ -60,9 +89,25 @@ class WhatsappService {
     if (c.isEmpty) return 'Who should I message on WhatsApp?';
     if (m.isEmpty) return 'What should the message say?';
 
+    // Fast path 1: jump to the chat via WhatsApp's own contact link, then
+    // type the message ourselves — skips phone-number resolution entirely.
+    if (!_phoneLike.hasMatch(c)) {
+      final chatUri = await screen.resolveWhatsappChatUri(c);
+      if (chatUri != null) {
+        final opened = await _openUri(chatUri);
+        if (opened != null && await _waitForWhatsapp(screen)) {
+          await Future<void>.delayed(const Duration(milliseconds: 700));
+          if (await _typeAndSend(screen, m)) {
+            return 'Sent to $c on WhatsApp: "$m"';
+          }
+        }
+      }
+    }
+
+    // Fast path 2: a wa.me link with a number pulled from Contacts.
     final digits = await _resolveDigits(c, contacts);
     if (digits == null || digits.isEmpty) {
-      return '$kWhatsappFallbackPrefix could not find a saved number for "$c" (checked contacts by exact and partial name match).';
+      return '$kWhatsappFallbackPrefix could not find "$c" in WhatsApp\'s own contacts, and no saved phone number either.';
     }
     // A number with no country code (short, local-format) is the classic
     // reason wa.me silently rejects an otherwise-real contact; still try it
@@ -72,11 +117,8 @@ class WhatsappService {
     if (opened == null) {
       return '$kWhatsappFallbackPrefix could not open WhatsApp (not installed, or the intent was blocked).';
     }
-
-    for (var i = 0; i < 16; i++) {
-      final pkg = await screen.getCurrentPackage();
-      if (pkg == 'com.whatsapp' || pkg == 'com.whatsapp.w4b') break;
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+    if (!await _waitForWhatsapp(screen)) {
+      return '$kWhatsappFallbackPrefix WhatsApp never came to the foreground.';
     }
     await Future<void>.delayed(const Duration(milliseconds: 900));
 

@@ -368,4 +368,16 @@ class ScreenAutomationService {
       return false;
     }
   }
+
+  /// The content:// URI for a contact's WhatsApp chat, if WhatsApp has that
+  /// person synced (which it does for any contact you've actually chatted
+  /// with) — opening this jumps straight to the chat with no phone number
+  /// needed at all, sidestepping missing-country-code / formatting issues.
+  Future<String?> resolveWhatsappChatUri(String name) async {
+    try {
+      return await _invoke<String>('resolveWhatsappChatUri', {'name': name});
+    } catch (_) {
+      return null;
+    }
+  }
 }

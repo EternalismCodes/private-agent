@@ -15,19 +15,13 @@ import android.view.WindowManager
 import android.view.View
 import android.widget.Button
 import android.net.Uri
-import android.provider.MediaStore
-import androidx.core.content.FileProvider
-import java.io.File
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.privateagent/accessibility"
     private val EVENT_CHANNEL = "com.privateagent/accessibility_events"
     private val CAMERA_CHANNEL = "com.privateagent/camera"
-    private val REQUEST_TAKE_PHOTO = 4271
     private var eventSink: EventChannel.EventSink? = null
     private var overlayView: View? = null
-    private var pendingPhotoResult: MethodChannel.Result? = null
-    private var pendingPhotoPath: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,6 +65,34 @@ class MainActivity : FlutterActivity() {
             }
         )
 
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.privateagent/hotword")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "start" -> {
+                        val accessKey = call.argument<String>("accessKey") ?: ""
+                        val keyword = call.argument<String>("keyword") ?: "PORCUPINE"
+                        val listenMs = (call.argument<Number>("listenMs") ?: 1500).toLong()
+                        val idleMs = (call.argument<Number>("idleMs") ?: 2500).toLong()
+                        if (accessKey.isBlank()) {
+                            result.error("NO_ACCESS_KEY", "A Picovoice AccessKey is required.", null)
+                        } else {
+                            HotwordPrefs.write(applicationContext, accessKey, keyword, listenMs, idleMs, true)
+                            val i = Intent(this, HotwordService::class.java)
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
+                            result.success(true)
+                        }
+                    }
+                    "stop" -> {
+                        val prefs = HotwordPrefs.read(applicationContext)
+                        HotwordPrefs.write(applicationContext, prefs.accessKey, prefs.keyword, prefs.listenMs, prefs.idleMs, false)
+                        stopService(Intent(this, HotwordService::class.java))
+                        result.success(true)
+                    }
+                    "isRunning" -> result.success(HotwordService.isRunning)
+                    "consumePendingWake" -> result.success(HotwordPrefs.consumePendingWake(applicationContext))
+                    else -> result.notImplemented()
+                }
+            }
         registerAccessibilityChannel(flutterEngine, this)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CAMERA_CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -88,59 +110,11 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
-     * Launches the device's own Camera app via the standard capture intent
-     * (rather than accessibility-tapping an arbitrary OEM camera UI, whose
-     * shutter button is frequently a custom view with no reliable click
-     * semantics — the same kind of element Teach mode can miss). Requires
-     * this Activity to actually be in front, same as any other tool-use
-     * action taken while PrivateAgent isn't the foreground app.
+     * Silent capture (see SilentCameraCapture) — no camera-app UI, so
+     * nothing for the user (or the agent) to tap to confirm a shutter.
      */
     private fun startPhotoCapture(result: MethodChannel.Result) {
-        try {
-            val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-            if (intent.resolveActivity(packageManager) == null) {
-                result.success(null)
-                return
-            }
-            val dir = File(cacheDir, "captures").apply { mkdirs() }
-            val file = File(dir, "IMG_${System.currentTimeMillis()}.jpg")
-            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-            intent.putExtra(MediaStore.EXTRA_OUTPUT, uri)
-            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            // Compatibility with camera apps on older/odd builds that don't
-            // honour the intent flags above for a content:// URI.
-            for (info in packageManager.queryIntentActivities(intent, 0)) {
-                grantUriPermission(
-                    info.activityInfo.packageName, uri,
-                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            }
-            if (pendingPhotoResult != null) {
-                // A previous capture never resolved (shouldn't normally happen since
-                // the channel call is awaited end-to-end) — don't leak it silently.
-                pendingPhotoResult?.success(null)
-            }
-            pendingPhotoResult = result
-            pendingPhotoPath = file.absolutePath
-            startActivityForResult(intent, REQUEST_TAKE_PHOTO)
-        } catch (t: Throwable) {
-            result.error("CAMERA_ERROR", t.message, null)
-        }
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_TAKE_PHOTO) return
-        val pending = pendingPhotoResult
-        val path = pendingPhotoPath
-        pendingPhotoResult = null
-        pendingPhotoPath = null
-        if (pending == null) return
-        if (resultCode == RESULT_OK && path != null && File(path).exists() && File(path).length() > 0) {
-            pending.success(path)
-        } else {
-            pending.success(null)
-        }
+        SilentCameraCapture.capture(applicationContext) { path -> result.success(path) }
     }
 
     companion object {
@@ -159,6 +133,11 @@ class MainActivity : FlutterActivity() {
 
                         "isServiceRunning" -> {
                             result.success(AgentAccessibilityService.isRunning())
+                        }
+
+                        "resolveWhatsappChatUri" -> {
+                            val name = call.argument<String>("name") ?: ""
+                            result.success(resolveWhatsappChatUri(context, name))
                         }
 
                         "checkOverlayPermission" -> {
@@ -337,6 +316,47 @@ class MainActivity : FlutterActivity() {
                         else -> result.notImplemented()
                     }
                 }
+        }
+
+        /**
+         * WhatsApp writes a row into Android's own Contacts Provider for every
+         * synced contact it has a chat with (mimetype
+         * vnd.android.cursor.item/vnd.com.whatsapp.profile). Opening
+         * ACTION_VIEW on that row's content URI jumps straight into the chat —
+         * no phone number needed at all, so it works regardless of whether the
+         * saved number has a country code, spaces, or any particular format.
+         */
+        fun resolveWhatsappChatUri(context: android.content.Context, name: String): String? {
+            if (name.isBlank()) return null
+            val resolver = context.contentResolver
+            val mimeTypes = listOf(
+                "vnd.android.cursor.item/vnd.com.whatsapp.profile",
+                "vnd.android.cursor.item/vnd.com.whatsapp.w4b.profile",
+            )
+            for (mime in mimeTypes) {
+                try {
+                    val cursor = resolver.query(
+                        android.provider.ContactsContract.Data.CONTENT_URI,
+                        arrayOf(android.provider.ContactsContract.Data._ID, android.provider.ContactsContract.Data.DISPLAY_NAME_PRIMARY),
+                        "${android.provider.ContactsContract.Data.MIMETYPE} = ? AND ${android.provider.ContactsContract.Data.DISPLAY_NAME_PRIMARY} LIKE ?",
+                        arrayOf(mime, "%$name%"),
+                        null,
+                    )
+                    cursor?.use {
+                        var fallbackId: Long? = null
+                        while (it.moveToNext()) {
+                            val id = it.getLong(it.getColumnIndexOrThrow(android.provider.ContactsContract.Data._ID))
+                            val dn = it.getString(it.getColumnIndexOrThrow(android.provider.ContactsContract.Data.DISPLAY_NAME_PRIMARY)) ?: ""
+                            if (dn.equals(name, ignoreCase = true)) {
+                                return "content://com.android.contacts/data/$id"
+                            }
+                            if (fallbackId == null) fallbackId = id
+                        }
+                        if (fallbackId != null) return "content://com.android.contacts/data/$fallbackId"
+                    }
+                } catch (_: Exception) {}
+            }
+            return null
         }
     }
 }

@@ -295,6 +295,11 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
             SchedulerBridge.rescheduleAll(context)
+            val hw = HotwordPrefs.read(context)
+            if (hw.enabled && hw.accessKey.isNotBlank()) {
+                val i = Intent(context, HotwordService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i) else context.startService(i)
+            }
         }
     }
 }
