@@ -801,11 +801,7 @@ Examples:
   /// [QuickLinkClassification]; safe to call and handles parsing errors.
   Future<QuickLinkClassification> _classifyForQuickLink(String prompt) async {
     try {
-      final resp = await ctx.ai.sendMessage(
-        _classifySystemPrompt,
-        prompt,
-        isAgentMode: true,
-      );
+      final resp = await ctx.ai.sendMessage('$_classifySystemPrompt\n\nUser request:\n$prompt');
       final text = resp.trim();
       // Parse the JSON response
       // Try to extract JSON from markdown code fences if present
