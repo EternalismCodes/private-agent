@@ -72,7 +72,7 @@ The call button opens a hands-free voice loop with real voice-activity detection
 
 The call keeps running while other apps are open, via a microphone foreground service with a Hang up notification. If you grant "Display over other apps" (asked once, the first time you call; there's also a manual toggle in Agent preferences), a small status pill floats over whatever app is open — listening / thinking / controlling your phone — so you can see what it's doing without switching back.
 
-By default it speaks with the phone's own text-to-speech, nudged toward a more natural installed voice where the device offers one. For a noticeably more natural voice, point **Custom call voice server** (Agent preferences) at a self-hosted [Piper](https://github.com/rhasspy/piper) HTTP server — `python3 http_server.py --model <voice>.onnx` — and calls speak through that instead, falling back to the system voice if the server doesn't respond.
+By default it speaks with the phone's own text-to-speech, nudged toward a more natural installed voice where the device offers one. For a noticeably more natural voice with zero setup, Agent preferences → **Voice** offers two fully local, fully built-in alternatives — no server to run, nothing sent anywhere: a small **Hindi** neural voice bundled in the app (nothing to download), and an optional **Natural voice** (~130MB, one-time download) that covers both English and Hindi and is used automatically once downloaded.
 
 Skills you've created run in calls too (and everywhere else): saying a skill's name or one of its trigger phrases runs it directly, without waiting on the model to decide to use it.
 

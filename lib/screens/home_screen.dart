@@ -7,7 +7,6 @@ import '../models/chat_message.dart';
 import '../services/ai_service.dart';
 import '../services/action_handler.dart';
 import '../services/voice_service.dart';
-import '../services/hotword_service.dart';
 import '../widgets/message_bubble.dart';
 import '../services/telegram_service.dart';
 import '../services/chat_history_service.dart';
@@ -45,7 +44,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final AiService _aiService = AiService();
   final ActionHandler _actionHandler = ActionHandler();
   final VoiceService _voiceService = VoiceService();
-  final HotwordService _hotwordService = HotwordService();
   final NotificationService _notificationService = NotificationService();
   late final TelegramService _telegramService;
 
@@ -93,15 +91,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     if (mounted) {
       setState(() {});
-    }
-    unawaited(_checkPendingWake());
-  }
-
-  /// The wake-word service brought the app to front — drop straight into
-  /// listening, same as tapping the mic button.
-  Future<void> _checkPendingWake() async {
-    if (await _hotwordService.consumePendingWake() && mounted && !_isListening) {
-      await _toggleVoice();
     }
   }
 
@@ -576,8 +565,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       );
       _startOverlayHistorySync();
       unawaited(_handleAppForegrounded());
-      unawaited(_checkPendingWake());
-    } else {
+      } else {
       _overlayHistoryTimer?.cancel();
       _updateOverlayState();
     }

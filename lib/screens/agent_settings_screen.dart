@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import '../agent/agent_mode.dart';
 import '../agent/prefs.dart';
@@ -14,11 +16,17 @@ class AgentSettingsScreen extends StatefulWidget {
 }
 
 class _AgentSettingsScreenState extends State<AgentSettingsScreen> {
+  static const MethodChannel _localTts = MethodChannel('com.privateagent/localtts');
   final AgentPrefs _prefs = AgentPrefs.instance;
   late final TextEditingController _name;
   late final TextEditingController _instructions;
   bool _ready = false;
   bool _overlayGranted = false;
+  bool _hindiReady = false;
+  bool _naturalReady = false;
+  bool _naturalDownloading = false;
+  int _naturalProgress = -1;
+  Timer? _progressTimer;
 
   @override
   void initState() {
@@ -34,18 +42,89 @@ class _AgentSettingsScreenState extends State<AgentSettingsScreen> {
       });
     });
     _refreshOverlayStatus();
+    _refreshVoiceStatus();
+  }
+
+  Future<void> _refreshVoiceStatus() async {
+    try {
+      final hindi = await _localTts.invokeMethod<bool>('isHindiReady');
+      final natural = await _localTts.invokeMethod<bool>('isNaturalReady');
+      if (!mounted) return;
+      setState(() {
+        _hindiReady = hindi == true;
+        _naturalReady = natural == true;
+      });
+    } catch (_) {
+      // Local TTS not available on this platform build — the System voice
+      // option still works fine.
+    }
+  }
+
+  Future<void> _downloadNaturalVoice() async {
+    if (_naturalDownloading) return;
+    setState(() {
+      _naturalDownloading = true;
+      _naturalProgress = -1;
+    });
+    _progressTimer = Timer.periodic(const Duration(milliseconds: 400), (_) async {
+      try {
+        final pct = await _localTts.invokeMethod<int>('naturalDownloadProgress');
+        if (mounted && pct != null) setState(() => _naturalProgress = pct);
+      } catch (_) {}
+    });
+    bool ok = false;
+    try {
+      ok = await _localTts.invokeMethod<bool>('downloadNatural') == true;
+    } catch (_) {
+      ok = false;
+    }
+    _progressTimer?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _naturalDownloading = false;
+      _naturalReady = ok;
+      _naturalProgress = -1;
+    });
+    if (ok) {
+      // Now that the better voice is available, use it by default — for
+      // English as well as Hindi, not just as a Hindi-only fallback.
+      _prefs.ttsEngine = 'natural';
+      await _save();
+      setState(() {});
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Natural voice downloaded and set as the active voice.')),
+        );
+      }
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not download the natural voice — check your connection and try again.')),
+      );
+    }
+  }
+
+  Future<void> _deleteNaturalVoice() async {
+    try {
+      await _localTts.invokeMethod('deleteNatural');
+    } catch (_) {}
+    if (_prefs.ttsEngine == 'natural') {
+      _prefs.ttsEngine = 'system';
+      await _save();
+    }
+    if (mounted) setState(() => _naturalReady = false);
+  }
+
+  @override
+  void dispose() {
+    _progressTimer?.cancel();
+    _name.dispose();
+    _instructions.dispose();
+    super.dispose();
   }
 
   Future<void> _refreshOverlayStatus() async {
     final granted = await FlutterOverlayWindow.isPermissionGranted();
     if (mounted) setState(() => _overlayGranted = granted);
-  }
-
-  @override
-  void dispose() {
-    _name.dispose();
-    _instructions.dispose();
-    super.dispose();
   }
 
   Future<void> _save() async {
@@ -64,6 +143,75 @@ class _AgentSettingsScreenState extends State<AgentSettingsScreen> {
         await _save();
       },
     );
+  }
+
+  List<Widget> _buildVoiceEngineSection() {
+    Widget chip(String id, String label, {bool enabled = true}) => ChoiceChip(
+          label: Text(label),
+          selected: _prefs.ttsEngine == id,
+          onSelected: !enabled
+              ? null
+              : (_) async {
+                  setState(() => _prefs.ttsEngine = id);
+                  await _save();
+                },
+        );
+
+    return [
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            chip('system', 'System voice'),
+            chip('hindi', 'Hindi (built-in)'),
+            chip('natural', _naturalReady ? 'Natural voice' : 'Natural voice (download)'),
+          ],
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        child: Text(
+          switch (_prefs.ttsEngine) {
+            'hindi' => 'A small Hindi neural voice bundled in the app — nothing to download, works fully offline, used for both replies and calls.',
+            'natural' => 'A bigger, more natural-sounding local voice for both English and Hindi. Runs fully on-device once downloaded — no server involved.',
+            _ => 'The phone\'s own installed text-to-speech.',
+          },
+          style: const TextStyle(fontSize: 12, color: Colors.grey, height: 1.35),
+        ),
+      ),
+      if (!_naturalReady)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+          child: _naturalDownloading
+              ? Row(
+                  children: [
+                    const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                    const SizedBox(width: 10),
+                    Text(_naturalProgress >= 0 ? 'Downloading… $_naturalProgress%' : 'Downloading…', style: const TextStyle(fontSize: 12.5)),
+                  ],
+                )
+              : OutlinedButton.icon(
+                  onPressed: _downloadNaturalVoice,
+                  icon: const Icon(Icons.download_rounded, size: 18),
+                  label: const Text('Download natural voice (~130MB, one-time)'),
+                ),
+        )
+      else
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _deleteNaturalVoice,
+              icon: const Icon(Icons.delete_outline_rounded, size: 18),
+              label: const Text('Remove downloaded natural voice'),
+            ),
+          ),
+        ),
+      const SizedBox(height: 4),
+    ];
   }
 
   @override
@@ -141,6 +289,7 @@ class _AgentSettingsScreenState extends State<AgentSettingsScreen> {
             _prefs.speakReplies,
             (v) => _prefs.speakReplies = v,
           ),
+          ..._buildVoiceEngineSection(),
           const SectionLabel('Calls'),
           _switch(
             'Status bubble during calls',

@@ -63,7 +63,7 @@ class ActionHandler {
     return s.isEmpty ? null : s;
   }
 
-  static const Set<String> _strict = {'set_alarm', 'set_timer', 'get_weather', 'play_youtube', 'play_favorite', 'play_netflix', 'play_favorite_netflix', 'analyze_screen', 'run_taught', 'send_ir', 'save_ir', 'send_whatsapp', 'take_photo'};
+  static const Set<String> _strict = {'set_alarm', 'set_timer', 'get_weather', 'play_youtube', 'play_favorite', 'play_netflix', 'play_favorite_netflix', 'analyze_screen', 'analyze_photo', 'run_taught', 'send_ir', 'save_ir', 'send_whatsapp', 'take_photo', 'take_selfie'};
   static final RegExp _failed = RegExp(r'^(error|could not|cannot|unable)', caseSensitive: false);
 
   /// Execute an action and return the result
@@ -212,7 +212,19 @@ class ActionHandler {
           break;
 
         case 'take_photo':
-          result = await _camera.takePhoto();
+          result = await _camera.takePhoto(selfie: _s(p['camera']).toLowerCase() == 'front' || _s(p['camera']).toLowerCase() == 'selfie');
+          break;
+
+        case 'take_selfie':
+          result = await _camera.takePhoto(selfie: true);
+          break;
+
+        case 'analyze_photo':
+          result = await LabVision.instance.analyzeImage(
+            _sn(p['path']) ?? _camera.lastPhotoPath,
+            _s(p['question'] ?? p['query']),
+            ai: aiService,
+          );
           break;
 
         case 'send_ir':

@@ -1,11 +1,14 @@
 import 'dart:async';
+import 'package:flutter/services.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import '../agent/prefs.dart';
 
 class VoiceService {
   final stt.SpeechToText _speech = stt.SpeechToText();
   final FlutterTts _tts = FlutterTts();
+  static const MethodChannel _local = MethodChannel('com.privateagent/localtts');
   bool _isInitialized = false;
   bool _isListening = false;
   Completer<String?>? _pendingListen;
@@ -183,11 +186,34 @@ class VoiceService {
   Future<void> speakAndWait(String text, {double? rate}) async {
     final clean = text.trim();
     if (clean.isEmpty) return;
+    if (await _speakLocal(clean, rate: rate)) return;
     try {
       if (rate != null) await _tts.setSpeechRate(rate);
       await _tts.awaitSpeakCompletion(true);
       await _tts.speak(clean);
     } catch (_) {}
+  }
+
+  /// Tries the built-in local voice engine (bundled Hindi voice, or the
+  /// optional downloaded natural voice) chosen in Agent preferences. Runs
+  /// entirely on-device — no server, nothing sent anywhere. Returns true if
+  /// it handled the speech (so the caller should not also use system TTS).
+  Future<bool> _speakLocal(String text, {double? rate}) async {
+    final engine = AgentPrefs.instance.ttsEngine;
+    if (engine != 'hindi' && engine != 'natural') return false;
+    try {
+      // flutter_tts rate (~0.4-0.7 typical) doesn't map 1:1 onto the local
+      // engine's playback speed multiplier; 1.0 is normal there.
+      final speed = rate == null ? 1.0 : (rate / 0.5).clamp(0.6, 1.6);
+      final ok = await _local.invokeMethod<bool>('speak', {
+        'text': text,
+        'voice': engine,
+        'speed': speed,
+      });
+      return ok == true;
+    } catch (_) {
+      return false; // engine not ready (e.g. natural voice not downloaded yet) — fall back
+    }
   }
 
   /// Stop listening
@@ -201,11 +227,15 @@ class VoiceService {
   /// Speak text aloud (fire-and-forget).
   Future<void> speak(String text) async {
     if (text.isEmpty) return;
+    if (await _speakLocal(text)) return;
     await _tts.speak(text);
   }
 
   /// Stop speaking
   Future<void> stopSpeaking() async {
+    try {
+      await _local.invokeMethod('stop');
+    } catch (_) {}
     await _tts.stop();
   }
 

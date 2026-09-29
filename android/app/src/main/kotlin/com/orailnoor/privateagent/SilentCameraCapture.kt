@@ -31,7 +31,11 @@ import java.io.FileOutputStream
  * scheduled task running in the background.
  */
 object SilentCameraCapture {
-    fun capture(context: Context, onResult: (String?) -> Unit) {
+    /**
+     * [front]: true takes a selfie with the front-facing camera, false (the
+     * default) uses the back camera — same silent Camera2 path either way.
+     */
+    fun capture(context: Context, front: Boolean = false, onResult: (String?) -> Unit) {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val thread = HandlerThread("SilentCameraCapture").apply { start() }
         val handler = Handler(thread.looper)
@@ -47,7 +51,10 @@ object SilentCameraCapture {
         }
 
         try {
+            val wantedFacing = if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
             val cameraId = manager.cameraIdList.firstOrNull {
+                manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == wantedFacing
+            } ?: manager.cameraIdList.firstOrNull {
                 manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
             } ?: manager.cameraIdList.firstOrNull()
             if (cameraId == null) {

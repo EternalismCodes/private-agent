@@ -44,6 +44,14 @@ class AgentPrefs extends ChangeNotifier {
   /// over other apps while a call is active.
   bool showCallOverlay = true;
 
+  /// Which text-to-speech voice to use for spoken replies and calls:
+  /// 'system' (the phone's own TTS, default), 'hindi' (the small built-in
+  /// offline Hindi neural voice, bundled in the app — nothing to download),
+  /// or 'natural' (a bigger, more natural-sounding local voice that covers
+  /// both English and Hindi — optional one-time download, still runs fully
+  /// on-device afterwards, no server involved).
+  String ttsEngine = 'system';
+
   Future<void> load() async {
     if (_loaded) return;
     final p = await SharedPreferences.getInstance();
@@ -58,6 +66,7 @@ class AgentPrefs extends ChangeNotifier {
     maxRetries = p.getInt('agent_max_retries') ?? 1;
     maxReplans = p.getInt('agent_max_replans') ?? 2;
     showCallOverlay = p.getBool('agent_show_call_overlay') ?? true;
+    ttsEngine = p.getString('agent_tts_engine') ?? 'system';
     _loaded = true;
   }
 
@@ -74,6 +83,7 @@ class AgentPrefs extends ChangeNotifier {
     await p.setInt('agent_max_retries', maxRetries);
     await p.setInt('agent_max_replans', maxReplans);
     await p.setBool('agent_show_call_overlay', showCallOverlay);
+    await p.setString('agent_tts_engine', ttsEngine);
     notifyListeners();
   }
 }

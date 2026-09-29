@@ -2,7 +2,6 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://alphacephei.com/maven") } // Vosk speech engine
     }
 }
 

@@ -159,6 +159,8 @@ class AgentController {
         if (fav != null) return fav;
         final an = await _tryAnalyze(text, ui);
         if (an != null) return an;
+        final anp = await _tryAnalyzePhoto(text, ui);
+        if (anp != null) return anp;
         final yt = await _tryYoutubePlay(text, ui);
         if (yt != null) return yt;
         final local = await _tryLocalIntent(text, ui);
@@ -511,7 +513,9 @@ SIMPLE ACTIONS (one step):
 - play_favorite {}: plays something from the user's noticed favorite YouTube channel (a channel that has come up in 2+ separate plays). Use for "play something I like" / "play my favorite" / "play something good" with no specific title given.
 - play_netflix {"title"}: opens Netflix's own search for that title and plays the top match.
 - play_favorite_netflix {}: plays the user's noticed favorite Netflix show (a title that has come up in 2+ separate Netflix plays). Use for "play my favorite show/series on Netflix" with no specific title given.
-- take_photo {}: opens the phone's camera app and takes a photo, then reports where it was saved. Use for "take a photo/picture", "use the camera".
+- take_photo {"camera"}: silently takes a photo with the back camera (default) and reports where it was saved. Pass {"camera": "front"} to use the front camera instead. Use for "take a photo/picture", "use the camera".
+- take_selfie {}: same as take_photo {"camera": "front"} — an explicit shortcut for "take a selfie".
+- analyze_photo {"question", "path"}: (experimental) look at a photo with the vision model and answer about it; defaults to the most recently taken photo/selfie when "path" is omitted. Use when asked to analyse/describe/read text in "the photo/picture/selfie" (as opposed to "the screen", which is analyze_screen).
 - send_whatsapp {"contact", "message"}: sends a WhatsApp message directly and fast (no need for execute_task). "contact" can be a saved contact name or a phone number; write the full message text yourself as usual. ALWAYS use this — never execute_task or plan_and_execute — for "message/text/tell <contact> ... on WhatsApp", even when you have to compose the message text yourself; execute_task is far slower here and send_whatsapp already does everything execute_task would (finds the contact, opens the chat, sends it).
 - send_ir {"name"}: sends a saved infrared remote code by device name (e.g. "ac", "tv", "ac 2")
 - save_ir {"name", "frequency", "pattern"}: saves an infrared code under a device name; frequency in Hz (usually 38000), pattern is the list of on/off microsecond durations the user gives you
@@ -798,7 +802,8 @@ Examples:
   Future<QuickLinkClassification> _classifyForQuickLink(String prompt) async {
     try {
       final resp = await ctx.ai.sendMessage(
-        '$_classifySystemPrompt\n\nUser request:\n$prompt',
+        _classifySystemPrompt,
+        prompt,
         isAgentMode: true,
       );
       final text = resp.trim();
@@ -918,6 +923,29 @@ Examples:
     ui.onProgress('Looking at the screen…');
     final result = await ctx.actions.execute(
       AgentAction(action: 'analyze_screen', params: {'question': text}, response: ''),
+      aiService: ctx.ai,
+    );
+    final reply = (result.details ?? '').trim().isEmpty ? 'Done.' : result.details!.trim();
+    _history.add({'role': 'user', 'content': text});
+    _history.add({'role': 'assistant', 'content': reply});
+    _trimHistory();
+    ui.addMessage(ChatMessage(role: 'assistant', content: reply, actionResult: result, mode: AgentMode.auto.id));
+    return AgentTurnResult(reply: reply, usedDevice: true, success: result.success, speak: true);
+  }
+
+  static final RegExp _analyzePhotoRe = RegExp(
+      r"\b(?:analy[sz]e|describe|explain|read|look at|check)\b[^.?!]{0,25}\b(?:photo|picture|pic|image|selfie)\b|\bwhat(?:'s| is)\b[^.?!]{0,20}\bin (?:the |that |my )?(?:photo|picture|pic|image|selfie)\b",
+      caseSensitive: false);
+
+  /// Experimental: "analyse the photo/selfie I took" -> vision model on the
+  /// last captured image (only when Vision fallback is enabled).
+  Future<AgentTurnResult?> _tryAnalyzePhoto(String text, AgentUi ui) async {
+    if (!_analyzePhotoRe.hasMatch(text)) return null;
+    await LabPrefs.instance.load();
+    if (!LabPrefs.instance.vision) return null;
+    ui.onProgress('Looking at the photo…');
+    final result = await ctx.actions.execute(
+      AgentAction(action: 'analyze_photo', params: {'question': text}, response: ''),
       aiService: ctx.ai,
     );
     final reply = (result.details ?? '').trim().isEmpty ? 'Done.' : result.details!.trim();

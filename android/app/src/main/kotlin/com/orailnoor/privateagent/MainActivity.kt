@@ -65,38 +65,15 @@ class MainActivity : FlutterActivity() {
             }
         )
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.privateagent/hotword")
-            .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "start" -> {
-                        val phrase = (call.argument<String>("wakePhrase") ?: "").trim()
-                        val listenMs = (call.argument<Number>("listenMs") ?: 2000).toLong()
-                        val idleMs = (call.argument<Number>("idleMs") ?: 2500).toLong()
-                        if (phrase.isBlank()) {
-                            result.error("NO_PHRASE", "A wake phrase is required.", null)
-                        } else {
-                            HotwordPrefs.write(applicationContext, phrase, listenMs, idleMs, true)
-                            val i = Intent(this, HotwordService::class.java)
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
-                            result.success(true)
-                        }
-                    }
-                    "stop" -> {
-                        val prefs = HotwordPrefs.read(applicationContext)
-                        HotwordPrefs.write(applicationContext, prefs.wakePhrase, prefs.listenMs, prefs.idleMs, false)
-                        stopService(Intent(this, HotwordService::class.java))
-                        result.success(true)
-                    }
-                    "isRunning" -> result.success(HotwordService.isRunning)
-                    "consumePendingWake" -> result.success(HotwordPrefs.consumePendingWake(applicationContext))
-                    else -> result.notImplemented()
-                }
-            }
         registerAccessibilityChannel(flutterEngine, this)
+        LocalTtsBridge.register(flutterEngine, this)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CAMERA_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "takePhoto" -> startPhotoCapture(result)
+                    "takePhoto" -> {
+                        val front = call.argument<Boolean>("front") ?: false
+                        startPhotoCapture(front, result)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -112,8 +89,8 @@ class MainActivity : FlutterActivity() {
      * Silent capture (see SilentCameraCapture) — no camera-app UI, so
      * nothing for the user (or the agent) to tap to confirm a shutter.
      */
-    private fun startPhotoCapture(result: MethodChannel.Result) {
-        SilentCameraCapture.capture(applicationContext) { path -> result.success(path) }
+    private fun startPhotoCapture(front: Boolean, result: MethodChannel.Result) {
+        SilentCameraCapture.capture(applicationContext, front) { path -> result.success(path) }
     }
 
     companion object {

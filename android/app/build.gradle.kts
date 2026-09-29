@@ -70,8 +70,8 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
-    // Wake-word ("hotword") detection — free, fully offline, open-source
-    // (Apache 2.0) speech engine, no account/AccessKey/usage limits needed.
-    implementation("com.alphacephei:vosk-android:0.3.47")
-    implementation("net.java.dev.jna:jna:5.13.0@aar")
+    // Built-in local text-to-speech (sherpa-onnx JNI libs are bundled directly
+    // under jniLibs/, no Maven artifact needed for those). commons-compress is
+    // only used to unpack the optional downloaded "natural voice" model.
+    implementation("org.apache.commons:commons-compress:1.26.2")
 }
