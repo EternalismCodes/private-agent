@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:developer' as developer;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,6 +11,84 @@ class AiResponse {
   final String content;
   final int totalTokens;
   AiResponse(this.content, this.totalTokens);
+}
+
+/// One OpenAI-compatible provider (base URL + key + model). The provider set
+/// in the main API settings is the primary; these are optional backups.
+class ProviderConfig {
+  final String name;
+  final String baseUrl;
+  final String apiKey;
+  final String model;
+  final bool enabled;
+  const ProviderConfig({
+    required this.name,
+    required this.baseUrl,
+    required this.apiKey,
+    required this.model,
+    this.enabled = true,
+  });
+
+  bool get usable => enabled && baseUrl.trim().isNotEmpty && apiKey.trim().isNotEmpty && model.trim().isNotEmpty;
+
+  Map<String, dynamic> toJson() => {'name': name, 'baseUrl': baseUrl, 'apiKey': apiKey, 'model': model, 'enabled': enabled};
+
+  static ProviderConfig fromJson(Map<String, dynamic> j) => ProviderConfig(
+        name: (j['name'] ?? '').toString(),
+        baseUrl: (j['baseUrl'] ?? '').toString(),
+        apiKey: (j['apiKey'] ?? '').toString(),
+        model: (j['model'] ?? '').toString(),
+        enabled: j['enabled'] != false,
+      );
+}
+
+/// Retry/cycle policy shared by every model call.
+///
+/// With several providers it moves to the next one after each failure and
+/// keeps cycling (two full rounds, at least 4 attempts). With a single
+/// provider it retries that one up to 4 times with growing pauses. Only then
+/// does the task fail. User cancellation is never retried.
+class ProviderFailover {
+  final AiService _ai;
+  int tried = 0;
+  late final int total = _ai._cycleLength();
+  late final int maxAttempts = total <= 1 ? 4 : (total * 2 < 4 ? 4 : total * 2);
+  ProviderFailover(this._ai) {
+    _ai._maybeResetToPrimary();
+  }
+
+  /// Call after a failed attempt. Returns true if the caller should try again
+  /// (the provider has already been switched / the pause already waited).
+  Future<bool> shouldRetry(Object error) async {
+    tried++;
+    final text = error.toString();
+    if (text.contains('Cancelled') || text.contains('API Key is not configured')) return false;
+    if (tried >= maxAttempts) return false;
+    if (total > 1) {
+      final from = _ai.activeProviderName;
+      _ai._advanceProvider();
+      developer.log('Provider "$from" failed ($error) — switching to "${_ai.activeProviderName}" (attempt ${tried + 1}/$maxAttempts)', name: 'PrivateAgent');
+      // Short pause when moving to a fresh provider; longer after a full lap.
+      await Future<void>.delayed(Duration(milliseconds: tried % total == 0 ? 2000 : 600));
+    } else {
+      final secs = (2 * tried).clamp(2, 8);
+      developer.log('Provider failed ($error) — retrying same provider (attempt ${tried + 1}/$maxAttempts) in ${secs}s', name: 'PrivateAgent');
+      await Future<void>.delayed(Duration(seconds: secs));
+    }
+    return true;
+  }
+
+  Exception finalError(Object error) {
+    final text = error.toString().replaceFirst('Exception: ', '');
+    if (text.contains('Cancelled') || text.contains('API Key is not configured')) {
+      return error is Exception ? error : Exception(text);
+    }
+    return Exception(
+      total > 1
+          ? 'All providers failed after $tried attempts across $total providers. Last error: $text'
+          : 'The provider failed after $tried attempts. Last error: $text',
+    );
+  }
 }
 
 class AiService {
@@ -57,6 +136,55 @@ class AiService {
   /// Temporarily replaces the configured model (used by scheduled tasks that
   /// pick their own model). Null means "use the model from Settings".
   String? modelOverride;
+
+  // ── Backup providers (automatic fallback) ────────────────────────────────
+  List<ProviderConfig> _backups = [];
+  ProviderConfig? _activeBackup; // null = primary provider
+  DateTime? _switchedAt;
+  static const Duration _stickyFor = Duration(minutes: 10);
+
+  List<ProviderConfig> get backupProviders => List.unmodifiable(_backups);
+  String get activeProviderName => _activeBackup == null ? 'Primary' : (_activeBackup!.name.isEmpty ? _activeBackup!.baseUrl : _activeBackup!.name);
+
+  List<ProviderConfig?> get _cycle => [null, ..._backups.where((b) => b.usable)];
+  int _cycleLength() => isConfigured ? _cycle.length : 0;
+
+  void _advanceProvider() {
+    final c = _cycle;
+    final idx = c.indexOf(_activeBackup);
+    _activeBackup = c[(idx < 0 ? 0 : idx + 1) % c.length];
+    _switchedAt = _activeBackup == null ? null : DateTime.now();
+  }
+
+  /// After a while on a backup, go back to trying the primary first.
+  void _maybeResetToPrimary() {
+    if (_activeBackup != null && _switchedAt != null && DateTime.now().difference(_switchedAt!) > _stickyFor) {
+      _activeBackup = null;
+      _switchedAt = null;
+    }
+  }
+
+  ProviderFailover beginFailover() => ProviderFailover(this);
+
+  /// Runs [attempt] with provider fallback (see [ProviderFailover]).
+  Future<T> withFailover<T>(Future<T> Function() attempt) async {
+    final plan = beginFailover();
+    while (true) {
+      try {
+        return await attempt();
+      } catch (e) {
+        if (!await plan.shouldRetry(e)) throw plan.finalError(e);
+      }
+    }
+  }
+
+  Future<void> saveBackupProviders(List<ProviderConfig> list) async {
+    final prefs = await SharedPreferences.getInstance();
+    _backups = List.of(list);
+    _activeBackup = null;
+    _switchedAt = null;
+    await prefs.setString('api_backup_providers', jsonEncode(list.map((e) => e.toJson()).toList()));
+  }
   int _maxSteps = 15;
   bool _disableMaxSteps = false;
   double _temperature = 1.0;
@@ -144,6 +272,15 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
     }
     _baseUrl = prefs.getString('api_base_url') ?? _defaultBaseUrl;
     _model = prefs.getString('api_model') ?? _defaultModel;
+    try {
+      final raw = prefs.getString('api_backup_providers');
+      _backups = raw == null || raw.isEmpty
+          ? []
+          : (jsonDecode(raw) as List).whereType<Map>().map((m) => ProviderConfig.fromJson(Map<String, dynamic>.from(m))).toList();
+    } catch (_) {
+      _backups = [];
+    }
+    _activeBackup = null;
     _maxSteps = prefs.getInt('api_max_steps') ?? 15;
     _disableMaxSteps = prefs.getBool('api_disable_max_steps') ?? false;
     _temperature = prefs.getDouble('api_temperature') ?? 1.0;
@@ -209,9 +346,16 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
   }
 
   bool get isConfigured => _apiKey != null && _apiKey!.isNotEmpty;
-  String get baseUrl => _baseUrl;
-  String get model => (modelOverride != null && modelOverride!.trim().isNotEmpty) ? modelOverride!.trim() : _model;
-  String get apiKey => _apiKey ?? '';
+  // The primary provider as saved in Settings, regardless of which provider
+  // is currently active after a fallback — Settings screens must use these.
+  String get primaryBaseUrl => _baseUrl;
+  String get primaryModel => _model;
+  String get primaryApiKey => _apiKey ?? '';
+  String get baseUrl => _activeBackup?.baseUrl ?? _baseUrl;
+  String get model => _activeBackup != null
+      ? _activeBackup!.model.trim()
+      : ((modelOverride != null && modelOverride!.trim().isNotEmpty) ? modelOverride!.trim() : _model);
+  String get apiKey => _activeBackup?.apiKey ?? _apiKey ?? '';
   int get maxSteps => _disableMaxSteps ? 999 : _maxSteps;
   int get rawMaxSteps => _maxSteps; // For the slider UI
   bool get disableMaxSteps => _disableMaxSteps;
@@ -223,7 +367,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
   int get _effectiveMaxTokens {
     // GLM is a reasoning model. With the app's 1,024-token default it can
     // consume the whole budget reasoning and finish without visible content.
-    if (isNvidiaBaseUrl(_baseUrl) &&
+    if (isNvidiaBaseUrl(baseUrl) &&
         model == nvidiaDefaultModel &&
         _maxTokens < 4096) {
       return 4096;
@@ -247,6 +391,23 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
     if (_apiKey == null || _apiKey!.isEmpty) {
       throw Exception('API Key is not configured. Please go to Settings.');
     }
+    final snapshot = List<Map<String, String>>.from(_conversationHistory);
+    return withFailover(() async {
+      try {
+        return await _sendMessageOnce(message, isAgentMode: isAgentMode);
+      } catch (_) {
+        _conversationHistory
+          ..clear()
+          ..addAll(snapshot); // don't duplicate the user turn on retry
+        rethrow;
+      }
+    });
+  }
+
+  Future<String> _sendMessageOnce(String message, {bool isAgentMode = true}) async {
+    if (_apiKey == null || _apiKey!.isEmpty) {
+      throw Exception('API Key is not configured. Please go to Settings.');
+    }
 
     // Add ONLY the text to the persistent conversation history to save tokens.
     _conversationHistory.add({'role': 'user', 'content': message});
@@ -264,7 +425,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
         ..._conversationHistory,
       ];
 
-      String requestUrl = _baseUrl;
+      String requestUrl = baseUrl;
       if (requestUrl.endsWith('/chat/completions')) {
         requestUrl = requestUrl; // User already included it
       } else {
@@ -292,7 +453,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
             Uri.parse(requestUrl),
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': 'Bearer $_apiKey',
+              'Authorization': 'Bearer $apiKey',
               'HTTP-Referer': 'https://github.com/orailnoor/private-agent',
               'X-Title': 'PrivateAgent',
             },
@@ -362,6 +523,34 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
     if (_apiKey == null || _apiKey!.isEmpty) {
       throw Exception('API Key is not configured. Please go to Settings.');
     }
+    final snapshot = List<Map<String, String>>.from(_conversationHistory);
+    final plan = beginFailover();
+    while (true) {
+      var yielded = false;
+      try {
+        await for (final chunk in _sendMessageStreamOnce(message, isAgentMode: isAgentMode)) {
+          yielded = true;
+          yield chunk;
+        }
+        return;
+      } catch (e) {
+        _conversationHistory
+          ..clear()
+          ..addAll(snapshot);
+        // Once text has started reaching the screen, a switch would garble it.
+        if (yielded) rethrow;
+        if (!await plan.shouldRetry(e)) throw plan.finalError(e);
+      }
+    }
+  }
+
+  Stream<String> _sendMessageStreamOnce(
+    String message, {
+    bool isAgentMode = true,
+  }) async* {
+    if (_apiKey == null || _apiKey!.isEmpty) {
+      throw Exception('API Key is not configured. Please go to Settings.');
+    }
 
     _conversationHistory.add({'role': 'user', 'content': message});
 
@@ -376,7 +565,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
         ..._conversationHistory,
       ];
 
-      String requestUrl = _baseUrl;
+      String requestUrl = baseUrl;
       if (requestUrl.endsWith('/chat/completions')) {
         requestUrl = requestUrl;
       } else {
@@ -391,7 +580,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
       final request = http.Request('POST', Uri.parse(requestUrl));
       request.headers.addAll({
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_apiKey',
+        'Authorization': 'Bearer $apiKey',
         'HTTP-Referer': 'https://github.com/orailnoor/private-agent',
         'X-Title': 'PrivateAgent',
       });
@@ -508,8 +697,12 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
     if (_apiKey == null || _apiKey!.isEmpty) {
       throw Exception('API Key is not configured. Please go to Settings.');
     }
+    return withFailover(() => _sendTaskMessageOnce(systemPrompt, prompt));
+  }
 
-    int maxRetries = 4;
+  Future<AiResponse> _sendTaskMessageOnce(String systemPrompt, String prompt) async {
+    // Retrying / provider switching is handled by [withFailover].
+    int maxRetries = 0;
     int currentTry = 0;
 
     while (true) {
@@ -520,7 +713,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
           {'role': 'user', 'content': prompt},
         ];
 
-        String requestUrl = _baseUrl;
+        String requestUrl = baseUrl;
         if (!requestUrl.endsWith('/chat/completions')) {
           if (requestUrl.endsWith('/')) {
             requestUrl = '${requestUrl}chat/completions';
@@ -534,7 +727,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
               Uri.parse(requestUrl),
               headers: {
                 'Content-Type': 'application/json',
-                'Authorization': 'Bearer $_apiKey',
+                'Authorization': 'Bearer $apiKey',
                 'HTTP-Referer': 'https://github.com/orailnoor/private-agent',
                 'X-Title': 'PrivateAgent',
               },

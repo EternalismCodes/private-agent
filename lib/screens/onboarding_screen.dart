@@ -57,9 +57,9 @@ class _OnboardingScreenState extends State<OnboardingScreen>
     if (!mounted || !_aiService.isConfigured) return;
     setState(() {
       _selectedProvider = 'custom';
-      _apiKeyController.text = _aiService.apiKey;
-      _baseUrlController.text = _aiService.baseUrl;
-      _modelController.text = _aiService.model;
+      _apiKeyController.text = _aiService.primaryApiKey;
+      _baseUrlController.text = _aiService.primaryBaseUrl;
+      _modelController.text = _aiService.primaryModel;
     });
   }
 

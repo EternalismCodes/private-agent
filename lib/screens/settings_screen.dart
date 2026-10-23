@@ -1,3 +1,4 @@
+import '../widgets/backup_providers_card.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -56,9 +57,9 @@ class _SettingsScreenState extends State<SettingsScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _apiKeyController = TextEditingController(text: widget.aiService.apiKey);
-    _baseUrlController = TextEditingController(text: widget.aiService.baseUrl);
-    _modelController = TextEditingController(text: widget.aiService.model);
+    _apiKeyController = TextEditingController(text: widget.aiService.primaryApiKey);
+    _baseUrlController = TextEditingController(text: widget.aiService.primaryBaseUrl);
+    _modelController = TextEditingController(text: widget.aiService.primaryModel);
     _telegramTokenController = TextEditingController(
       text: widget.telegramService.botToken,
     );
@@ -188,9 +189,9 @@ class _SettingsScreenState extends State<SettingsScreen>
       await widget.aiService.init();
       if (!mounted) return;
       setState(() {
-        _apiKeyController.text = widget.aiService.apiKey;
-        _baseUrlController.text = widget.aiService.baseUrl;
-        _modelController.text = widget.aiService.model;
+        _apiKeyController.text = widget.aiService.primaryApiKey;
+        _baseUrlController.text = widget.aiService.primaryBaseUrl;
+        _modelController.text = widget.aiService.primaryModel;
         _maxSteps = widget.aiService.rawMaxSteps.toDouble();
         _disableMaxSteps = widget.aiService.disableMaxSteps;
         _temperature = widget.aiService.temperature;
@@ -667,6 +668,9 @@ class _SettingsScreenState extends State<SettingsScreen>
               ),
             ],
           ),
+
+          // Backup providers (automatic fallback)
+          BackupProvidersCard(aiService: widget.aiService),
 
           // 3. Parameters & Tuning Card
           _buildSettingsCard(

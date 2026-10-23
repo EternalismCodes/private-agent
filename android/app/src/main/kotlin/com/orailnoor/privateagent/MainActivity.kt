@@ -67,6 +67,7 @@ class MainActivity : FlutterActivity() {
 
         registerAccessibilityChannel(flutterEngine, this)
         LocalTtsBridge.register(flutterEngine, this)
+        SystemSoundMuter.register(flutterEngine, this)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CAMERA_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {

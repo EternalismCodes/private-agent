@@ -54,8 +54,23 @@ object LocalTtsEngine {
                 ),
             )
             OfflineTts(assetManager = assets, config = config).also { hindiEngine = it }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             null
+        }
+    }
+
+    /**
+     * Cheap check that the bundled Hindi voice files exist. Deliberately does
+     * NOT touch sherpa-onnx / the native library (that only loads lazily on the
+     * first real speak, and any failure there is caught, never a crash).
+     */
+    fun isHindiAssetPresent(context: Context): Boolean {
+        return try {
+            context.assets.open("tts/hi/model.onnx").use {}
+            context.assets.open("tts/hi/tokens.txt").use {}
+            true
+        } catch (e: Throwable) {
+            false
         }
     }
 
@@ -81,7 +96,7 @@ object LocalTtsEngine {
                 ),
             )
             OfflineTts(config = config).also { naturalEngine = it }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             null
         }
     }
@@ -114,7 +129,7 @@ object LocalTtsEngine {
         }
         val audio = try {
             tts.generate(text = clean, sid = sid, speed = speed.coerceIn(0.5f, 1.8f))
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             return false
         }
         if (stopRequested || audio.samples.isEmpty()) return false
@@ -147,7 +162,7 @@ object LocalTtsEngine {
                 .setBufferSizeInBytes(bufferSize)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             return false
         }
         track = newTrack
@@ -172,7 +187,7 @@ object LocalTtsEngine {
                 }
             }
             return !stopRequested
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             return false
         } finally {
             try {
@@ -193,7 +208,7 @@ object LocalTtsEngine {
         } catch (_: Exception) {}
     }
 
-    fun isHindiReady(context: Context): Boolean = hindi(context) != null
+    fun isHindiReady(context: Context): Boolean = isHindiAssetPresent(context)
 
     fun isNaturalReady(context: Context): Boolean = NaturalVoiceModelManager.isReady(context)
 

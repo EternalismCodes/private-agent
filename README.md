@@ -152,3 +152,8 @@ A Telegram message goes through the same Auto-mode agent the app itself uses —
 ## License
 
 This project is open-source and available for modification.
+
+
+## Backup providers (automatic fallback)
+
+Settings → **Backup providers** lets you add extra OpenAI-compatible providers (base URL, key, model). If the main provider fails, requests move to the next one and keep cycling (two full rounds, at least 4 attempts). With only one provider, it is retried up to 4 times (with growing pauses) before the task ends. After switching to a backup it stays there for 10 minutes, then tries the main provider first again. Pressing Stop is never retried.

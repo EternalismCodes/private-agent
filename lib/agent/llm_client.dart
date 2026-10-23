@@ -81,12 +81,27 @@ class LlmClient {
 
   static Exception _cancelled() => Exception('Cancelled');
 
-  /// Single, non-streamed completion. Retries transient failures.
+  /// Single, non-streamed completion. On failure it falls back across the
+  /// configured providers (cycling), or retries a lone provider up to 4
+  /// times, before giving up. [retries] is kept for compatibility; retry
+  /// policy now lives in [ProviderFailover].
   Future<AiResponse> complete(
     List<Map<String, String>> messages, {
     double? temperature,
     int? maxTokens,
     int retries = 2,
+  }) async {
+    _requireKey();
+    return ai.withFailover(
+      () => _completeOnce(messages, temperature: temperature, maxTokens: maxTokens, retries: 0),
+    );
+  }
+
+  Future<AiResponse> _completeOnce(
+    List<Map<String, String>> messages, {
+    double? temperature,
+    int? maxTokens,
+    int retries = 0,
   }) async {
     _requireKey();
     final epoch = _epoch;
@@ -167,6 +182,29 @@ class LlmClient {
   /// Streams a completion. Reasoning tokens (`reasoning_content`) that some
   /// providers send separately are surfaced through [LlmDelta.reasoning].
   Stream<LlmDelta> stream(
+    List<Map<String, String>> messages, {
+    double? temperature,
+    int? maxTokens,
+  }) async* {
+    _requireKey();
+    final plan = ai.beginFailover();
+    while (true) {
+      var yielded = false;
+      try {
+        await for (final d in _streamOnce(messages, temperature: temperature, maxTokens: maxTokens)) {
+          yielded = true;
+          yield d;
+        }
+        return;
+      } catch (e) {
+        // After text has started streaming, switching providers would garble it.
+        if (yielded) rethrow;
+        if (!await plan.shouldRetry(e)) throw plan.finalError(e);
+      }
+    }
+  }
+
+  Stream<LlmDelta> _streamOnce(
     List<Map<String, String>> messages, {
     double? temperature,
     int? maxTokens,

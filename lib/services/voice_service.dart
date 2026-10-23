@@ -9,6 +9,15 @@ class VoiceService {
   final stt.SpeechToText _speech = stt.SpeechToText();
   final FlutterTts _tts = FlutterTts();
   static const MethodChannel _local = MethodChannel('com.privateagent/localtts');
+  static const MethodChannel _sysSound = MethodChannel('com.privateagent/systemsound');
+
+  /// Silences the recognizer's start-of-listening beep so calls feel like
+  /// calls (it restarts listening every few seconds).
+  Future<void> _muteBeep() async {
+    try {
+      await _sysSound.invokeMethod('muteBeepBriefly', {'ms': 1200});
+    } catch (_) {}
+  }
   bool _isInitialized = false;
   bool _isListening = false;
   Completer<String?>? _pendingListen;
@@ -50,6 +59,7 @@ class VoiceService {
 
     _isListening = true;
 
+    await _muteBeep();
     await _speech.listen(
       onResult: (SpeechRecognitionResult result) {
         if (result.finalResult) {
@@ -110,6 +120,7 @@ class VoiceService {
     });
 
     try {
+      await _muteBeep();
       await _speech.listen(
         onResult: (SpeechRecognitionResult result) {
           final words = result.recognizedWords;
