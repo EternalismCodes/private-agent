@@ -4,6 +4,8 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import java.io.File
+import java.io.FileOutputStream
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
@@ -35,25 +37,52 @@ object LocalTtsEngine {
     private const val KOKORO_SID_HINDI = 31 // hf_alpha
     private const val KOKORO_SID_ENGLISH = 3 // af_heart
 
+    /**
+     * espeak-ng (used for phonemes) reads its data with normal file APIs, not
+     * Android's AssetManager, so the bundled voice must live on disk. Copies
+     * assets/tts/hi once into filesDir and returns that directory.
+     */
+    private fun hindiDir(context: Context): File {
+        val dest = File(context.filesDir, "tts-hi-v1")
+        val marker = File(dest, ".complete")
+        if (marker.exists()) return dest
+        dest.deleteRecursively()
+        copyAssetDir(context, "tts/hi", dest)
+        marker.writeText("ok")
+        return dest
+    }
+
+    private fun copyAssetDir(context: Context, assetPath: String, dest: File) {
+        val children = context.assets.list(assetPath) ?: emptyArray()
+        if (children.isEmpty()) {
+            dest.parentFile?.mkdirs()
+            context.assets.open(assetPath).use { input ->
+                FileOutputStream(dest).use { out -> input.copyTo(out, 256 * 1024) }
+            }
+        } else {
+            dest.mkdirs()
+            for (c in children) copyAssetDir(context, "$assetPath/$c", File(dest, c))
+        }
+    }
+
     @Synchronized
     private fun hindi(context: Context): OfflineTts? {
         hindiEngine?.let { return it }
         return try {
-            val assets = context.assets
-            val base = "tts/hi"
+            val dir = hindiDir(context).absolutePath
             val config = OfflineTtsConfig(
                 model = OfflineTtsModelConfig(
                     vits = OfflineTtsVitsModelConfig(
-                        model = "$base/model.onnx",
-                        tokens = "$base/tokens.txt",
-                        dataDir = "$base/espeak-ng-data",
+                        model = "$dir/model.onnx",
+                        tokens = "$dir/tokens.txt",
+                        dataDir = "$dir/espeak-ng-data",
                     ),
                     numThreads = 2,
                     debug = false,
                     provider = "cpu",
                 ),
             )
-            OfflineTts(assetManager = assets, config = config).also { hindiEngine = it }
+            OfflineTts(config = config).also { hindiEngine = it }
         } catch (e: Throwable) {
             null
         }
@@ -89,11 +118,13 @@ object LocalTtsEngine {
                         dataDir = "$dir/espeak-ng-data",
                         lexicon = "$dir/lexicon-us-en.txt,$dir/lexicon-zh.txt",
                         lang = "",
+                        dictDir = "$dir/dict",
                     ),
                     numThreads = 4,
                     debug = false,
                     provider = "cpu",
                 ),
+                ruleFsts = "$dir/phone-zh.fst,$dir/date-zh.fst,$dir/number-zh.fst",
             )
             OfflineTts(config = config).also { naturalEngine = it }
         } catch (e: Throwable) {
