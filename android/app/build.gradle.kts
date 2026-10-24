@@ -46,5 +46,6 @@ flutter {
 
 
 dependencies {
+    implementation("org.apache.commons:commons-compress:1.27.1")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
