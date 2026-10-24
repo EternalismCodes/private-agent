@@ -55,6 +55,9 @@ dependency_overrides:
   flutter_overlay_window:
     path: ./local_plugins/flutter_overlay_window
 
+  agent_native:
+    path: ./local_plugins/agent_native
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
