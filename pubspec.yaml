@@ -32,6 +32,10 @@ dependencies:
   # Storage
   shared_preferences: ^2.3.0
   path_provider: ^2.1.0
+  # Built-in natural offline voices (official k2-fsa package; keep this version
+  # exactly in step with the models in assets/voices) + audio playback.
+  sherpa_onnx: 1.13.8
+  audioplayers: ^6.1.0
 
   # Encrypted credential storage (Android Keystore backed)
   flutter_secure_storage: ^9.2.4
@@ -55,9 +59,6 @@ dependency_overrides:
   flutter_overlay_window:
     path: ./local_plugins/flutter_overlay_window
 
-  agent_native:
-    path: ./local_plugins/agent_native
-
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -74,3 +75,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/
+    - assets/voices/
+    - assets/voices/espeak-ng-data/
+    - assets/voices/espeak-ng-data/lang/gmw/
+    - assets/voices/espeak-ng-data/lang/inc/

@@ -24,10 +24,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
-    }
-
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.orailnoor.privateagent"
@@ -64,14 +60,16 @@ android {
     }
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
 flutter {
     source = "../.."
 }
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
-    // Built-in local text-to-speech (sherpa-onnx JNI libs are bundled directly
-    // under jniLibs/, no Maven artifact needed for those). commons-compress is
-    // only used to unpack the optional downloaded "natural voice" model.
-    implementation("org.apache.commons:commons-compress:1.26.2")
 }

@@ -44,13 +44,15 @@ class AgentPrefs extends ChangeNotifier {
   /// over other apps while a call is active.
   bool showCallOverlay = true;
 
-  /// Which text-to-speech voice to use for spoken replies and calls:
-  /// 'system' (the phone's own TTS, default), 'hindi' (the small built-in
-  /// offline Hindi neural voice, bundled in the app — nothing to download),
-  /// or 'natural' (a bigger, more natural-sounding local voice that covers
-  /// both English and Hindi — optional one-time download, still runs fully
-  /// on-device afterwards, no server involved).
-  String ttsEngine = 'system';
+  /// 'neural' = built-in natural offline voices (default, falls back to the
+  /// system voice if they can't run); 'system' = the phone's own voice.
+  String ttsEngine = 'neural';
+
+  /// Chosen text-to-speech voices ('' = automatically use the best voice
+  /// installed on the phone). Replies are spoken in the Hindi voice when the
+  /// text is Hindi, otherwise the English one.
+  String ttsEnglishVoice = '';
+  String ttsHindiVoice = '';
 
   Future<void> load() async {
     if (_loaded) return;
@@ -66,7 +68,9 @@ class AgentPrefs extends ChangeNotifier {
     maxRetries = p.getInt('agent_max_retries') ?? 1;
     maxReplans = p.getInt('agent_max_replans') ?? 2;
     showCallOverlay = p.getBool('agent_show_call_overlay') ?? true;
-    ttsEngine = p.getString('agent_tts_engine') ?? 'system';
+    ttsEngine = p.getString('agent_tts_engine') ?? 'neural';
+    ttsEnglishVoice = p.getString('agent_tts_voice_en') ?? '';
+    ttsHindiVoice = p.getString('agent_tts_voice_hi') ?? '';
     _loaded = true;
   }
 
@@ -84,6 +88,8 @@ class AgentPrefs extends ChangeNotifier {
     await p.setInt('agent_max_replans', maxReplans);
     await p.setBool('agent_show_call_overlay', showCallOverlay);
     await p.setString('agent_tts_engine', ttsEngine);
+    await p.setString('agent_tts_voice_en', ttsEnglishVoice);
+    await p.setString('agent_tts_voice_hi', ttsHindiVoice);
     notifyListeners();
   }
 }

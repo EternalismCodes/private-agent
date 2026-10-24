@@ -19,6 +19,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
@@ -118,7 +119,8 @@
             android:exported="false"
             android:launchMode="singleInstance"
             android:excludeFromRecents="true"
-            android:showOnLockScreen="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
         <receiver android:name=".ScheduleReceiver" android:exported="false" />
         <receiver android:name=".BootReceiver" android:exported="false">
@@ -133,7 +135,16 @@
             </intent-filter>
         </receiver>
 
-        <!-- Provide required meta-data for flutter -->
+        <!-- Floating call-status pill (flutter_overlay_window) -->
+        <service
+            android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Shows a small call status overlay above other apps" />
+        </service>
+
 
         <!-- Shizuku provider (optional - only works when Shizuku is installed) -->
         <provider

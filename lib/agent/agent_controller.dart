@@ -801,9 +801,13 @@ Examples:
   /// [QuickLinkClassification]; safe to call and handles parsing errors.
   Future<QuickLinkClassification> _classifyForQuickLink(String prompt) async {
     try {
+      // sendMessage() takes a single message, so the classifier's system
+      // instructions travel at the top of it. Chat mode (isAgentMode: false)
+      // is used so the agent's action-JSON system prompt doesn't override the
+      // classifier's own JSON format.
       final resp = await ctx.ai.sendMessage(
-        '$_classifySystemPrompt\n\nUser request: $prompt',
-        isAgentMode: true,
+        '$_classifySystemPrompt\n\n$prompt',
+        isAgentMode: false,
       );
       final text = resp.trim();
       // Parse the JSON response

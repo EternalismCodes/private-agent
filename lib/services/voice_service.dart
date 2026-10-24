@@ -4,11 +4,13 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import '../agent/prefs.dart';
+import 'neural_tts.dart';
+import 'tts_voices.dart';
 
 class VoiceService {
   final stt.SpeechToText _speech = stt.SpeechToText();
   final FlutterTts _tts = FlutterTts();
-  static const MethodChannel _local = MethodChannel('com.privateagent/localtts');
+  String _voiceLang = ''; // 'en' / 'hi' — which voice is currently applied
   static const MethodChannel _sysSound = MethodChannel('com.privateagent/systemsound');
 
   /// Silences the recognizer's start-of-listening beep so calls feel like
@@ -31,7 +33,6 @@ class VoiceService {
   Future<void> init() async {
     if (_isInitialized) return;
 
-    unawaited(_preferNaturalVoice());
     _isInitialized = await _speech.initialize(
       onError: (error) {
         _isListening = false;
@@ -43,7 +44,7 @@ class VoiceService {
     );
 
     // Configure TTS
-    await _tts.setLanguage('en-US');
+    await _applyVoiceFor('hello');
     await _tts.setSpeechRate(0.5);
     await _tts.setVolume(1.0);
     await _tts.setPitch(1.0);
@@ -156,40 +157,35 @@ class VoiceService {
     return text;
   }
 
-  /// Best-effort switch to a more natural-sounding installed voice (prefers
-  /// network/"neural"-style voices, e.g. Google's, over the terse offline
-  /// default). Silently does nothing if the engine doesn't expose voices.
-  Future<void> _preferNaturalVoice() async {
+  /// Forget which voice is applied so the next utterance re-selects it
+  /// (call after the user changes the voice in preferences).
+  void invalidateVoice() => _voiceLang = '';
+
+  /// Picks the Hindi or English voice to match [text] (the user's chosen
+  /// voice from preferences, else the best installed one), so replies in
+  /// either language sound natural without any extra setup.
+  Future<void> _applyVoiceFor(String text) async {
+    final lang = TtsVoiceCatalog.looksHindi(text) ? 'hi' : 'en';
+    if (lang == _voiceLang) return;
     try {
-      final dynamic raw = await _tts.getVoices;
-      if (raw is! List) return;
-      Map? best;
-      var bestScore = -1;
-      for (final v in raw) {
-        if (v is! Map) continue;
-        final locale = (v['locale'] ?? '').toString().toLowerCase();
-        if (!locale.startsWith('en')) continue;
-        final name = (v['name'] ?? '').toString().toLowerCase();
-        var score = 0;
-        if (v['network'] == true) score += 3;
-        if (name.contains('wavenet') || name.contains('neural') || name.contains('studio')) {
-          score += 3;
-        }
-        if (name.contains('local')) score -= 1;
-        if (locale == 'en-us') score += 1;
-        if (score > bestScore) {
-          bestScore = score;
-          best = v;
+      final prefs = AgentPrefs.instance;
+      final chosen = lang == 'hi' ? prefs.ttsHindiVoice : prefs.ttsEnglishVoice;
+      final voices = await TtsVoiceCatalog.list(_tts, lang);
+      TtsVoice? pick;
+      if (chosen.isNotEmpty) {
+        for (final v in voices) {
+          if (v.name == chosen) pick = v;
         }
       }
-      if (best != null && bestScore > 0 && best['name'] != null) {
-        await _tts.setVoice({
-          'name': best['name'].toString(),
-          'locale': (best['locale'] ?? 'en-US').toString(),
-        });
+      pick ??= voices.isNotEmpty ? voices.first : null;
+      if (pick != null) {
+        await _tts.setVoice({'name': pick.name, 'locale': pick.locale});
+      } else {
+        await _tts.setLanguage(lang == 'hi' ? 'hi-IN' : 'en-US');
       }
+      _voiceLang = lang;
     } catch (_) {
-      // Not every engine/platform supports voice selection; system default stays.
+      // Engine without voice selection: system default stays.
     }
   }
 
@@ -197,34 +193,20 @@ class VoiceService {
   Future<void> speakAndWait(String text, {double? rate}) async {
     final clean = text.trim();
     if (clean.isEmpty) return;
-    if (await _speakLocal(clean, rate: rate)) return;
+    if (await _speakNeural(clean, rate: rate)) return;
     try {
+      await _applyVoiceFor(clean);
       if (rate != null) await _tts.setSpeechRate(rate);
       await _tts.awaitSpeakCompletion(true);
       await _tts.speak(clean);
     } catch (_) {}
   }
 
-  /// Tries the built-in local voice engine (bundled Hindi voice, or the
-  /// optional downloaded natural voice) chosen in Agent preferences. Runs
-  /// entirely on-device — no server, nothing sent anywhere. Returns true if
-  /// it handled the speech (so the caller should not also use system TTS).
-  Future<bool> _speakLocal(String text, {double? rate}) async {
-    final engine = AgentPrefs.instance.ttsEngine;
-    if (engine != 'hindi' && engine != 'natural') return false;
-    try {
-      // flutter_tts rate (~0.4-0.7 typical) doesn't map 1:1 onto the local
-      // engine's playback speed multiplier; 1.0 is normal there.
-      final speed = rate == null ? 1.0 : (rate / 0.5).clamp(0.6, 1.6);
-      final ok = await _local.invokeMethod<bool>('speak', {
-        'text': text,
-        'voice': engine,
-        'speed': speed,
-      });
-      return ok == true;
-    } catch (_) {
-      return false; // engine not ready (e.g. natural voice not downloaded yet) — fall back
-    }
+  /// Built-in natural voice; false means "use the system voice instead".
+  Future<bool> _speakNeural(String text, {double? rate}) async {
+    if (AgentPrefs.instance.ttsEngine != 'neural') return false;
+    final speed = rate == null ? 1.0 : (rate / 0.5).clamp(0.7, 1.5).toDouble();
+    return NeuralTts.instance.speak(text, speed: speed);
   }
 
   /// Stop listening
@@ -238,15 +220,16 @@ class VoiceService {
   /// Speak text aloud (fire-and-forget).
   Future<void> speak(String text) async {
     if (text.isEmpty) return;
-    if (await _speakLocal(text)) return;
-    await _tts.speak(text);
+    if (await _speakNeural(text)) return;
+    try {
+      await _applyVoiceFor(text);
+      await _tts.speak(text);
+    } catch (_) {}
   }
 
   /// Stop speaking
   Future<void> stopSpeaking() async {
-    try {
-      await _local.invokeMethod('stop');
-    } catch (_) {}
+    await NeuralTts.instance.stop();
     await _tts.stop();
   }
 

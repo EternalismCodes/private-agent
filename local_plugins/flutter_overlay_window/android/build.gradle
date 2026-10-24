@@ -1,17 +1,6 @@
 group 'flutter.overlay.window.flutter_overlay_window'
 version '1.0'
 
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-    }
-
-    dependencies {
-        classpath 'com.android.tools.build:gradle:7.3.0'
-    }
-}
-
 rootProject.allprojects {
     repositories {
         google()

@@ -72,7 +72,7 @@ The call button opens a hands-free voice loop with real voice-activity detection
 
 The call keeps running while other apps are open, via a microphone foreground service with a Hang up notification. If you grant "Display over other apps" (asked once, the first time you call; there's also a manual toggle in Agent preferences), a small status pill floats over whatever app is open — listening / thinking / controlling your phone — so you can see what it's doing without switching back.
 
-By default it speaks with the phone's own text-to-speech, nudged toward a more natural installed voice where the device offers one. For a noticeably more natural voice with zero setup, Agent preferences → **Voice** offers two fully local, fully built-in alternatives — no server to run, nothing sent anywhere: a small **Hindi** neural voice bundled in the app (nothing to download), and an optional **Natural voice** (~130MB, one-time download) that covers both English and Hindi and is used automatically once downloaded.
+By default it speaks with the phone's own text-to-speech, nudged toward a more natural installed voice where the device offers one. Replies are spoken with **built-in natural offline voices** (Piper English "Lessac" and Hindi "Pratham", run through the official k2-fsa `sherpa_onnx` Flutter package, bundled in `assets/voices`) — nothing to download or run, and the right voice is chosen from the reply's language. If they can't start, the phone's own speech engine speaks instead, and a crash guard switches the natural voice off after two interrupted attempts in a row (Agent preferences → Voice lets you retry, or pick the System voice and its English/Hindi voices).
 
 Skills you've created run in calls too (and everywhere else): saying a skill's name or one of its trigger phrases runs it directly, without waiting on the model to decide to use it.
 
@@ -157,3 +157,8 @@ This project is open-source and available for modification.
 ## Backup providers (automatic fallback)
 
 Settings → **Backup providers** lets you add extra OpenAI-compatible providers (base URL, key, model). If the main provider fails, requests move to the next one and keep cycling (two full rounds, at least 4 attempts). With only one provider, it is retried up to 4 times (with growing pauses) before the task ends. After switching to a backup it stays there for 10 minutes, then tries the main provider first again. Pressing Stop is never retried.
+
+
+## Building the APK
+
+`.github/workflows/build-apk.yml` builds the release APK from a clean checkout (Java 17, stable Flutter, `flutter pub get`, `flutter build apk --release --target-platform android-arm64`) and uploads `app-release.apk` as an artifact. Without signing secrets it signs with the debug key; to sign with your own key, add the repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`.

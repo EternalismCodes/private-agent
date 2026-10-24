@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:android_intent_plus/android_intent.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+import '../services/neural_tts.dart';
+import '../services/tts_voices.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import '../agent/agent_mode.dart';
 import '../agent/prefs.dart';
@@ -16,17 +19,14 @@ class AgentSettingsScreen extends StatefulWidget {
 }
 
 class _AgentSettingsScreenState extends State<AgentSettingsScreen> {
-  static const MethodChannel _localTts = MethodChannel('com.privateagent/localtts');
   final AgentPrefs _prefs = AgentPrefs.instance;
   late final TextEditingController _name;
   late final TextEditingController _instructions;
   bool _ready = false;
   bool _overlayGranted = false;
-  bool _hindiReady = false;
-  bool _naturalReady = false;
-  bool _naturalDownloading = false;
-  int _naturalProgress = -1;
-  Timer? _progressTimer;
+  final FlutterTts _previewTts = FlutterTts();
+  List<TtsVoice> _enVoices = [];
+  List<TtsVoice> _hiVoices = [];
 
   @override
   void initState() {
@@ -42,81 +42,63 @@ class _AgentSettingsScreenState extends State<AgentSettingsScreen> {
       });
     });
     _refreshOverlayStatus();
-    _refreshVoiceStatus();
+    _loadVoices();
   }
 
-  Future<void> _refreshVoiceStatus() async {
-    try {
-      final hindi = await _localTts.invokeMethod<bool>('isHindiReady');
-      final natural = await _localTts.invokeMethod<bool>('isNaturalReady');
-      if (!mounted) return;
-      setState(() {
-        _hindiReady = hindi == true;
-        _naturalReady = natural == true;
-      });
-    } catch (_) {
-      // Local TTS not available on this platform build — the System voice
-      // option still works fine.
-    }
-  }
-
-  Future<void> _downloadNaturalVoice() async {
-    if (_naturalDownloading) return;
-    setState(() {
-      _naturalDownloading = true;
-      _naturalProgress = -1;
-    });
-    _progressTimer = Timer.periodic(const Duration(milliseconds: 400), (_) async {
-      try {
-        final pct = await _localTts.invokeMethod<int>('naturalDownloadProgress');
-        if (mounted && pct != null) setState(() => _naturalProgress = pct);
-      } catch (_) {}
-    });
-    bool ok = false;
-    try {
-      ok = await _localTts.invokeMethod<bool>('downloadNatural') == true;
-    } catch (_) {
-      ok = false;
-    }
-    _progressTimer?.cancel();
+  Future<void> _loadVoices() async {
+    final en = await TtsVoiceCatalog.list(_previewTts, 'en');
+    final hi = await TtsVoiceCatalog.list(_previewTts, 'hi');
     if (!mounted) return;
     setState(() {
-      _naturalDownloading = false;
-      _naturalReady = ok;
-      _naturalProgress = -1;
+      _enVoices = en;
+      _hiVoices = hi;
     });
-    if (ok) {
-      // Now that the better voice is available, use it by default — for
-      // English as well as Hindi, not just as a Hindi-only fallback.
-      _prefs.ttsEngine = 'natural';
-      await _save();
-      setState(() {});
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Natural voice downloaded and set as the active voice.')),
-        );
-      }
-    } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not download the natural voice — check your connection and try again.')),
-      );
-    }
   }
 
-  Future<void> _deleteNaturalVoice() async {
+  Future<void> _preview(String lang) async {
+    final chosen = lang == 'hi' ? _prefs.ttsHindiVoice : _prefs.ttsEnglishVoice;
+    final list = lang == 'hi' ? _hiVoices : _enVoices;
     try {
-      await _localTts.invokeMethod('deleteNatural');
+      await _previewTts.stop();
+      TtsVoice? pick;
+      for (final v in list) {
+        if (v.name == chosen) pick = v;
+      }
+      pick ??= list.isNotEmpty ? list.first : null;
+      if (pick != null) {
+        await _previewTts.setVoice({'name': pick.name, 'locale': pick.locale});
+      } else {
+        await _previewTts.setLanguage(lang == 'hi' ? 'hi-IN' : 'en-US');
+      }
+      await _previewTts.speak(lang == 'hi' ? 'नमस्ते, मैं आपकी मदद के लिए यहाँ हूँ।' : 'Hi, I am here to help you.');
     } catch (_) {}
-    if (_prefs.ttsEngine == 'natural') {
-      _prefs.ttsEngine = 'system';
-      await _save();
+  }
+
+  Future<void> _testNeural(String text) async {
+    final ok = await NeuralTts.instance.speak(text);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('The natural voice could not start on this phone — the system voice will be used instead.')),
+      );
     }
-    if (mounted) setState(() => _naturalReady = false);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _openSystemVoiceSettings() async {
+    try {
+      await const AndroidIntent(action: 'com.android.settings.TTS_SETTINGS').launch();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Open Settings → System → Languages → Text-to-speech output.')),
+        );
+      }
+    }
   }
 
   @override
   void dispose() {
-    _progressTimer?.cancel();
+    _previewTts.stop();
     _name.dispose();
     _instructions.dispose();
     super.dispose();
@@ -146,70 +128,126 @@ class _AgentSettingsScreenState extends State<AgentSettingsScreen> {
   }
 
   List<Widget> _buildVoiceEngineSection() {
-    Widget chip(String id, String label, {bool enabled = true}) => ChoiceChip(
-          label: Text(label),
-          selected: _prefs.ttsEngine == id,
-          onSelected: !enabled
-              ? null
-              : (_) async {
-                  setState(() => _prefs.ttsEngine = id);
+    Widget picker(String lang, String title, List<TtsVoice> voices, String current, void Function(String) set) {
+      final names = voices.map((v) => v.name).toSet();
+      final value = names.contains(current) ? current : '';
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+        child: Row(
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<String>(
+                key: ValueKey('$lang-${voices.length}-$value'),
+                isExpanded: true,
+                initialValue: value,
+                decoration: InputDecoration(labelText: title, border: const OutlineInputBorder()),
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('Automatic (best installed)')),
+                  for (final v in voices) DropdownMenuItem(value: v.name, child: Text(v.label, overflow: TextOverflow.ellipsis)),
+                ],
+                onChanged: (v) async {
+                  setState(() => set(v ?? ''));
                   await _save();
                 },
-        );
+              ),
+            ),
+            IconButton(
+              tooltip: 'Preview',
+              icon: const Icon(Icons.play_circle_outline_rounded),
+              onPressed: () => _preview(lang),
+            ),
+          ],
+        ),
+      );
+    }
 
+    final neural = _prefs.ttsEngine == 'neural';
     return [
       Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
         child: Wrap(
           spacing: 8,
-          runSpacing: 8,
           children: [
-            chip('system', 'System voice'),
-            chip('hindi', 'Hindi (built-in)'),
-            chip('natural', _naturalReady ? 'Natural voice' : 'Natural voice (download)'),
+            ChoiceChip(
+              label: const Text('Natural (built-in)'),
+              selected: neural,
+              onSelected: (_) async {
+                setState(() => _prefs.ttsEngine = 'neural');
+                await _save();
+              },
+            ),
+            ChoiceChip(
+              label: const Text('System voice'),
+              selected: !neural,
+              onSelected: (_) async {
+                setState(() => _prefs.ttsEngine = 'system');
+                await _save();
+              },
+            ),
           ],
         ),
       ),
       Padding(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
         child: Text(
-          switch (_prefs.ttsEngine) {
-            'hindi' => 'A small Hindi neural voice bundled in the app — nothing to download, works fully offline, used for both replies and calls.',
-            'natural' => 'A bigger, more natural-sounding local voice for both English and Hindi. Runs fully on-device once downloaded — no server involved.',
-            _ => 'The phone\'s own installed text-to-speech.',
-          },
+          NeuralTts.instance.isDisabled
+              ? 'The natural voice was switched off automatically because it did not finish twice in a row on this phone. The system voice is being used instead.'
+              : 'Natural English and Hindi voices bundled in the app — fully offline, nothing to download or run. If they ever fail to start, the system voice speaks instead.',
           style: const TextStyle(fontSize: 12, color: Colors.grey, height: 1.35),
         ),
       ),
-      if (!_naturalReady)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-          child: _naturalDownloading
-              ? Row(
-                  children: [
-                    const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-                    const SizedBox(width: 10),
-                    Text(_naturalProgress >= 0 ? 'Downloading… $_naturalProgress%' : 'Downloading…', style: const TextStyle(fontSize: 12.5)),
-                  ],
-                )
-              : OutlinedButton.icon(
-                  onPressed: _downloadNaturalVoice,
-                  icon: const Icon(Icons.download_rounded, size: 18),
-                  label: const Text('Download natural voice (~130MB, one-time)'),
-                ),
-        )
-      else
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              onPressed: _deleteNaturalVoice,
-              icon: const Icon(Icons.delete_outline_rounded, size: 18),
-              label: const Text('Remove downloaded natural voice'),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+        child: Wrap(
+          spacing: 8,
+          children: [
+            if (NeuralTts.instance.isDisabled)
+              TextButton(
+                onPressed: () async {
+                  await NeuralTts.instance.reenable();
+                  if (mounted) setState(() {});
+                },
+                child: const Text('Try natural voice again'),
+              ),
+            TextButton.icon(
+              icon: const Icon(Icons.play_circle_outline_rounded, size: 18),
+              label: const Text('Test English'),
+              onPressed: () => _testNeural('Hi, I am your private assistant. How can I help you today?'),
             ),
+            TextButton.icon(
+              icon: const Icon(Icons.play_circle_outline_rounded, size: 18),
+              label: const Text('Test Hindi'),
+              onPressed: () => _testNeural('नमस्ते, मैं आपकी मदद के लिए यहाँ हूँ।'),
+            ),
+          ],
+        ),
+      ),
+      const Padding(
+        padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
+        child: Text('System voices (used when the system voice is selected or as backup)', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+      ),
+      picker('en', 'English voice', _enVoices, _prefs.ttsEnglishVoice, (v) => _prefs.ttsEnglishVoice = v),
+      picker('hi', 'Hindi voice', _hiVoices, _prefs.ttsHindiVoice, (v) => _prefs.ttsHindiVoice = v),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        child: Text(
+          _hiVoices.isEmpty
+              ? 'No Hindi voice is installed yet. Install one (and a high-quality English voice) from your phone\'s text-to-speech settings — replies in Hindi then switch to it automatically.'
+              : 'Replies are spoken in the Hindi voice when the text is Hindi, otherwise in the English voice. Uses the phone\'s own speech engine — nothing extra to run.',
+          style: const TextStyle(fontSize: 12, color: Colors.grey, height: 1.35),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: _openSystemVoiceSettings,
+            icon: const Icon(Icons.record_voice_over_rounded, size: 18),
+            label: const Text('Get more natural voices'),
           ),
         ),
+      ),
       const SizedBox(height: 4),
     ];
   }
