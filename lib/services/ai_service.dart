@@ -538,7 +538,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
           ..clear()
           ..addAll(snapshot);
         // Once text has started reaching the screen, a switch would garble it.
-        if (yielded) rethrow;
+        if (yielded && !e.toString().contains('without a visible answer')) rethrow;
         if (!await plan.shouldRetry(e)) throw plan.finalError(e);
       }
     }

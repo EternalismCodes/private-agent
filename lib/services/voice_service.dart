@@ -189,17 +189,45 @@ class VoiceService {
     }
   }
 
-  /// Speaks [text] with the system voice and completes when it has finished.
-  Future<void> speakAndWait(String text, {double? rate}) async {
-    final clean = text.trim();
-    if (clean.isEmpty) return;
-    if (await _speakNeural(clean, rate: rate)) return;
+  // ── One voice at a time ────────────────────────────────────────────────
+  // All speech (chat replies and calls, natural or system voice) goes through
+  // one shared queue, so two utterances can never play over each other.
+  static Future<void> _tail = Future<void>.value();
+  static int _speechGen = 0;
+  static String _lastSpoken = '';
+  static DateTime _lastSpokenAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  Future<void> _enqueue(Future<void> Function() job) {
+    final run = _tail.then((_) => job()).catchError((_) {});
+    _tail = run;
+    return run;
+  }
+
+  /// Plays one utterance with the chosen engine; never both at once.
+  Future<void> _utter(String text, {double? rate}) async {
     try {
-      await _applyVoiceFor(clean);
+      await _tts.stop(); // make sure the system voice is silent first
+    } catch (_) {}
+    if (await _speakNeural(text, rate: rate)) return;
+    await NeuralTts.instance.stop(); // and the natural voice, before falling back
+    try {
+      await _applyVoiceFor(text);
       if (rate != null) await _tts.setSpeechRate(rate);
       await _tts.awaitSpeakCompletion(true);
-      await _tts.speak(clean);
+      await _tts.speak(text);
     } catch (_) {}
+  }
+
+  /// Speaks [text] after anything already being said, and completes when it
+  /// has finished (used for call replies, sentence by sentence).
+  Future<void> speakAndWait(String text, {double? rate}) {
+    final clean = text.trim();
+    if (clean.isEmpty) return Future<void>.value();
+    final gen = _speechGen;
+    return _enqueue(() async {
+      if (gen != _speechGen) return; // stopped or replaced while waiting
+      await _utter(clean, rate: rate);
+    });
   }
 
   /// Built-in natural voice; false means "use the system voice instead".
@@ -217,20 +245,30 @@ class VoiceService {
     await _speech.stop();
   }
 
-  /// Speak text aloud (fire-and-forget).
+  /// Speak text aloud (fire-and-forget). Replaces anything currently being
+  /// said, and ignores an identical request made a moment ago.
   Future<void> speak(String text) async {
-    if (text.isEmpty) return;
-    if (await _speakNeural(text)) return;
-    try {
-      await _applyVoiceFor(text);
-      await _tts.speak(text);
-    } catch (_) {}
+    final clean = text.trim();
+    if (clean.isEmpty) return;
+    final now = DateTime.now();
+    if (clean == _lastSpoken && now.difference(_lastSpokenAt) < const Duration(seconds: 4)) return;
+    _lastSpoken = clean;
+    _lastSpokenAt = now;
+    await stopSpeaking();
+    final gen = _speechGen;
+    await _enqueue(() async {
+      if (gen != _speechGen) return;
+      await _utter(clean);
+    });
   }
 
-  /// Stop speaking
+  /// Stop speaking (and drop anything still waiting to be spoken).
   Future<void> stopSpeaking() async {
+    _speechGen++;
     await NeuralTts.instance.stop();
-    await _tts.stop();
+    try {
+      await _tts.stop();
+    } catch (_) {}
   }
 
   void dispose() {

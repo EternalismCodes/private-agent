@@ -300,7 +300,7 @@ Then, after the closing tag, write the final answer: clear, well organised and a
     _trimHistory();
     final message = ui.addMessage(ChatMessage(role: 'assistant', content: '', mode: mode.id));
 
-    final answer = await _stream(
+    final answer = await _streamRetrying(
       [
         {'role': 'system', 'content': system},
         ..._history,
@@ -332,6 +332,40 @@ Then, after the closing tag, write the final answer: clear, well organised and a
   }
 
   /// Streams a completion into [message]. Returns the final visible answer.
+  /// Like [_stream], but when the model comes back with nothing visible
+  /// ("finished without a visible answer") it automatically tries again —
+  /// moving to the next backup provider if there is one, or retrying the same
+  /// provider (up to 4 attempts in total) — before giving up.
+  Future<String> _streamRetrying(
+    List<Map<String, String>> messages,
+    ChatMessage message,
+    AgentUi ui, {
+    bool keepReasoning = false,
+    bool hideJson = false,
+    double? temperature,
+    int? maxTokens,
+    void Function(String sentence)? onSentence,
+  }) async {
+    final plan = ctx.ai.beginFailover();
+    while (true) {
+      final answer = await _stream(
+        messages,
+        message,
+        ui,
+        keepReasoning: keepReasoning,
+        hideJson: hideJson,
+        temperature: temperature,
+        maxTokens: maxTokens,
+        onSentence: onSentence,
+      );
+      if (_cancelled || answer.trim().isNotEmpty) return answer;
+      if (!await plan.shouldRetry(Exception('The model finished without a visible answer'))) return answer;
+      if (_cancelled) return answer;
+      message.content = '';
+      ui.refresh();
+    }
+  }
+
   Future<String> _stream(
     List<Map<String, String>> messages,
     ChatMessage message,
@@ -560,7 +594,7 @@ RULES:
     _trimHistory();
     final message = ui.addMessage(ChatMessage(role: 'assistant', content: '', mode: AgentMode.auto.id));
 
-    final answer = await _stream(
+    final answer = await _streamRetrying(
       [
         {'role': 'system', 'content': system},
         ..._history,

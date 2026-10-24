@@ -140,6 +140,7 @@ class NeuralTts {
     await checkGuard();
     if (_disabled) return false;
     final ticket = ++_ticket;
+    var started = false;
     SharedPreferences? prefs;
     try {
       prefs = await SharedPreferences.getInstance();
@@ -169,13 +170,16 @@ class NeuralTts {
       final wav = File('$dir/utterance_${ticket % 2}.wav');
       await wav.writeAsBytes(_toWav(samples, rate), flush: true);
       if (ticket != _ticket) return true;
+      started = true;
       await _play(wav.path, Duration(milliseconds: samples.length * 1000 ~/ rate), ticket);
       return true;
     } catch (_) {
       try {
         await prefs?.setBool(_kGuard, false);
       } catch (_) {}
-      return false;
+      // If audio already began, don't let the caller also speak with the
+      // system voice (that would be two voices at once).
+      return started;
     }
   }
 
