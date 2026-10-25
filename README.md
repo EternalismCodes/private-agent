@@ -1,188 +1,171 @@
-<p align="center">
-  <img src="https://github.com/X-SLAYER/flutter_overlay_window/assets/22800380/d22ae453-e83d-4da6-ba68-f4eaef666ef1" height="170" alt="auto_route_logo">
-</p>
+# PrivateAgent
 
-<p align="center">
-  <a href="https://img.shields.io/badge/License-MIT-green">
-    <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License">
-  </a>
-  <a href="https://github.com/X-SLAYER/flutter_overlay_window">
-    <img src="https://img.shields.io/github/stars/X-SLAYER/flutter_overlay_window?style=flat&logo=github&colorB=green&label=stars" alt="stars">
-  </a>
-  <a href="https://pub.dev/packages/flutter_overlay_window">
-    <img src="https://img.shields.io/pub/v/flutter_overlay_window.svg?label=pub&color=orange" alt="pub version">
-  </a>
-</p>
+PrivateAgent is an open-source Android automation agent built with Flutter. It utilizes the DeepSeek API and native Android Accessibility Services to interpret screen layouts and execute multi-step tasks across any installed application via natural language commands.
 
-<p align="center">
-  <a href="https://www.buymeacoffee.com/xslayer" target="_blank">
-    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="30px" width= "108px">
-  </a>
-</p>
+## Architecture
 
-<p align="center">
-Flutter plugin for displaying your Flutter app over other apps on the screen
-</p>
+The system operates on a continuous feedback loop:
+1. The user issues a command (via voice, text, or Telegram remote access).
+2. The agent captures the current screen hierarchy, calculating the exact spatial coordinates of all interactive elements.
+3. The layout data is transmitted to the AI provider alongside the current task context and the result of the previous action.
+4. The AI determines the next optimal action (e.g., clicking specific coordinates, inputting text, scrolling).
+5. The native Android layer executes the action.
+6. The loop repeats until the task is marked as complete.
 
----
+## Capabilities
 
-## Preview
+- **Screen Reading:** Parses the Android UI tree to map clickable, scrollable, and editable elements.
+- **Coordinate-Based Interaction:** Simulates physical screen taps based on coordinate geometry, mitigating issues with missing text labels or inaccessible icons.
+- **Remote Access:** Integrates with the Telegram Bot API via background polling, allowing users to issue commands and monitor task execution progress remotely.
+- **Voice Control:** Native speech-to-text integration for hands-free operation.
 
-|                                                          TrueCaller overlay example                                                          |                                                        click-through overlay example                                                        |                                                         Messanger chat-head example                                                         |
-| :------------------------------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------------------------: |
-| <img src='https://user-images.githubusercontent.com/22800380/165636217-8957396b-dc54-4e6d-aa50-e8bfdb9383cf.gif' height='600' width='300' /> | <img src='https://user-images.githubusercontent.com/22800380/165636120-dcd9ee13-5fca-4f8a-a562-b2f53c0b5e24.gif' height='600' width='300'/> | <img src='https://user-images.githubusercontent.com/22800380/178730917-40f267bb-63a2-4ad3-ba69-f7c1285a1882.gif' height='600' width='300'/> |
+## What's new in 1.1
+
+The original accessibility-based phone-control engine (`AgentAccessibilityService`, `ScreenAutomationService`, `TaskExecutor`) is unchanged in behaviour. Everything below is built around it.
+
+### Five modes
+
+| Mode | What it does |
+| --- | --- |
+| **Chat** | Fast conversation, no phone control. |
+| **Think** | Reasons step by step first; the reasoning appears in a collapsible block. |
+| **Plan** | Writes a step-by-step plan and stops. Edit it if you like and run it with one tap. |
+| **Plan & Execute** | Plans, then runs it right away with recovery. No approval step. |
+| **Auto** | Decides by itself: answers, performs a single action, runs a one-app task, or plans and executes a multi-app job. Asks before sensitive steps (send, call, pay, delete, post). |
+
+### Autonomous execution
+
+`Planner` -> `PlanRunner` -> `TaskExecutor`. Each on-screen step is handed to the existing screen agent. When a step fails, the runner first checks whether the screen is already *past* that step (and marks it done), then retries with the failure as a hint, and finally re-writes the rest of the plan (retries and re-plans are configurable). Optional per-step verification is off by default because it costs one model call per step. Every run is stored in **Task History** with its mode and plan.
+
+### Learns exact workflows from one run
+
+Every successful on-screen task is recorded with the app it ran in, a signature of each screen, and the exact element that was tapped (label, class, centre coordinates). The next time, the task is **replayed without model calls**: it continues the moment the screen looks as recorded, taps the same element (found live, falling back to the recorded coordinates) and confirms it ended on the recorded screen. If anything differs it falls back to the model. Whole requests that worked are also remembered as routines, so repeating them skips planning as well. "open <app>" never needs a model.
+
+Workflows that type one piece of text are learned as **templates**: "open YouTube and search for cats videos" is stored with "cats videos" as a slot. Asking for "search dogs on YouTube" or "on youtube search for slippers" reuses the exact same taps with the new words typed in, no model call for either the routing or the on-screen steps.
+
+### Memory, preferences, skills
+
+* **Memory** - `memory.md` in the app's private storage. The agent learns durable facts from conversation ("remember that...", or automatically), and you can view, edit and delete them.
+* **Preferences** - name, custom instructions, default mode, safety switches.
+* **Skills** - reusable recipes you write, or that the agent distils from a task it completed ("Save as skill" on a finished plan). Matching skills are injected into planning; any skill can be run on demand.
+* **Learned workflows** - the existing replay memory, now visible and manageable.
+
+### Scheduled tasks
+
+Create tasks in the Schedules screen or just say it in Auto mode ("every weekday at 8 check the weather"). Each schedule can use its own model, run in Auto or Plan & Execute, and runs unattended unless you turn on "Ask before sensitive steps". An exact alarm wakes the screen. Because Android blocks apps from opening other apps while they're in the background, a scheduled task that needs to use tools (open an app, tap, type) needs PrivateAgent in front: grant "Display over other apps" (the Schedules screen prompts for this) so it can bring itself forward by itself; without it, tap the notification first. A PIN/pattern lock still blocks driving other apps until you unlock the phone. The result is reported in a notification.
+
+### Accounts vault
+
+Logins are stored with the Android Keystore (`flutter_secure_storage`); if the Keystore is unavailable the app falls back to a private file. The model only ever sees an account *label*: passwords are typed into fields locally through a `type_credential` action. The API key uses the same store.
+
+### Faster and more efficient
+
+- Screens are read once per step instead of twice; fixed multi-second waits are replaced by a wait that ends as soon as the screen stops changing. Per-step verification is a model call and stays off by default.
+- The planner writes coarse steps ("search for cats on YouTube", not "tap the search icon"). If a step's result is already visible after a failure, the runner marks it done rather than retrying or re-planning.
+- "open Instagram" and anything else with no room for interpretation runs with no model call.
+- Stop is immediate: it aborts in-flight network requests directly, not just after they time out, and force-clears the UI a few seconds later if anything is still winding down.
+- The API key is kept in both encrypted storage and preferences, so it survives a Keystore reset and is never asked for again after Settings.
+
+### Talk to the agent
+
+The call button opens a hands-free voice loop with real voice-activity detection: it starts listening as soon as you speak and stops as soon as you go quiet (about a second of silence), rather than waiting out a fixed window either way. While the agent is thinking or controlling the phone the microphone is off — it never listens to itself, its own screen-automation, or picks up background noise mid-task — and it starts listening again once it has a reply. The agent answers aloud, sentence by sentence while it is still writing. It ends when you say bye, from a long silence, or the Hang up button/notification.
+
+The call keeps running while other apps are open, via a microphone foreground service with a Hang up notification. If you grant "Display over other apps" (asked once, the first time you call; there's also a manual toggle in Agent preferences), a small status pill floats over whatever app is open — listening / thinking / controlling your phone — so you can see what it's doing without switching back.
+
+By default it speaks with the phone's own text-to-speech, nudged toward a more natural installed voice where the device offers one. Replies are spoken with **built-in natural offline voices** (Piper English "Lessac" and Hindi "Pratham", run through the official k2-fsa `sherpa_onnx` Flutter package, bundled in `assets/voices`) — nothing to download or run, and the right voice is chosen from the reply's language. If they can't start, the phone's own speech engine speaks instead, and a crash guard switches the natural voice off after two interrupted attempts in a row (Agent preferences → Voice lets you retry, or pick the System voice and its English/Hindi voices).
+
+Skills you've created run in calls too (and everywhere else): saying a skill's name or one of its trigger phrases runs it directly, without waiting on the model to decide to use it.
+
+### Custom provider
+
+Any OpenAI-compatible endpoint works: set **Base URL**, **API key** and **model** in Settings (OpenRouter, NVIDIA, DeepSeek, local servers, ...).
+
+## Building the release APK
+
+```bash
+flutter pub get
+flutter test
+flutter build apk --release            # build/app/outputs/flutter-apk/app-release.apk
+```
+
+Or run the **Android release artifacts** GitHub Action (Actions tab -> Run workflow); it runs the tests and publishes universal and per-ABI APKs.
+
+**Signing.** Without a key, release builds fall back to the debug key, which is fine to try but cannot receive updates that survive reinstall. To sign properly: create `android/key.properties` (never commit it - it's gitignored) pointing at a keystore:
+
+```
+storePassword=...
+keyPassword=...
+keyAlias=...
+storeFile=release.jks   # placed in android/app/
+```
+
+`flutter build apk --release` then signs with it automatically. For the GitHub Action, add repo secrets `KEYSTORE_BASE64` (the keystore file, base64-encoded), `KEYSTORE_PASSWORD` and `KEY_ALIAS`; the workflow writes `key.properties` itself and the build picks it up. Skip the secrets and it still builds, debug-signed.
 
 ## Installation
 
-Add package to your pubspec:
+Download the latest APK directly from the [Releases Page](https://github.com/orailnoor/private-agent/releases).
 
-```yaml
-dependencies:
-  flutter_overlay_window: any # or the latest version on Pub
-```
+Choose `app-universal-release.apk` when it is available. It supports ARM64,
+32-bit ARM, and x86_64 devices in one package. If a release only provides split
+APKs, most modern Android phones—including Snapdragon devices—must use
+`app-arm64-v8a-release.apk`.
 
-### Android
+PrivateAgent supports Android 8.0 (API 26) and newer. Current release builds are
+also checked for Android 15/16's 16 KB native-library alignment requirement.
 
-You'll need to add the `SYSTEM_ALERT_WINDOW` permission and `OverlayService` to your Android Manifest.
-Replace `explanation_for_special_use` with your custom explanation.
+## Setup Instructions (How to use for FREE)
 
-```XML
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+This app requires an AI brain to operate. You can use it **100% for free** by using OpenRouter's free models.
 
-    <application>
-        ...
-        <service android:name="flutter.overlay.window.flutter_overlay_window.OverlayService" 
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="explanation_for_special_use"/>
-        </service>
-    </application>
-```
+1. Install the APK on your Android device (API 30+ recommended).
+2. Go to [OpenRouter.ai](https://openrouter.ai/) and create a free account.
+3. Generate a free API Key.
+4. Launch PrivateAgent and go to the **Settings** screen.
+5. Tap the **"OpenRouter"** quick-select chip under Base URL.
+6. Paste your API Key.
+7. Type `openai/gpt-oss-120b:free` (or any other free model) into the Model field.
+8. Enable the **"PrivateAgent Screen Control"** service in your Android Accessibility Settings.
 
-### Entry point
+### “Restricted setting” when enabling Screen Control
 
-Inside `main.dart` create an entry point for your Overlay widget;
+Android may block accessibility access for apps installed from an APK. This is
+an operating-system safety restriction:
 
-```dart
+1. Open **Settings → Apps → PrivateAgent**.
+2. Open the three-dot menu in the top-right corner.
+3. Tap **Allow restricted settings** and confirm.
+4. Return to PrivateAgent and open **Accessibility Settings** again.
+5. Enable **PrivateAgent Screen Control**.
 
-// overlay entry point
-@pragma("vm:entry-point")
-void overlayMain() {
-  runApp(const MaterialApp(
-    debugShowCheckedModeBanner: false,
-    home: Material(child: Text("My overlay"))
-  ));
-}
+PrivateAgent now shows these instructions and provides shortcuts to both App
+Info and Accessibility Settings during onboarding.
 
-```
+## Telegram Integration
 
-### USAGE
+To enable remote access:
+1. Acquire a bot token from BotFather on Telegram.
+2. Input the token in the PrivateAgent Settings screen and enable the integration toggle.
+3. The app polls Telegram for messages and keeps doing so in the background via a small foreground service, so it stays reachable with the screen off or another app open.
 
-```dart
- /// check if overlay permission is granted
- final bool status = await FlutterOverlayWindow.isPermissionGranted();
+A Telegram message goes through the same Auto-mode agent the app itself uses — multi-step tasks, learned workflows and skills, memory, everything — not just single actions, and runs unattended (no confirmation prompts; nobody's there to answer them). If "Display over other apps" is granted, it wakes the screen and brings PrivateAgent forward so the command can actually reach the screen; otherwise nothing can drive the screen while the app is backgrounded, which is an Android restriction, not something this app can route around.
 
- /// request overlay permission
- /// it will open the overlay settings page and return `true` once the permission granted.
- final bool status = await FlutterOverlayWindow.requestPermission();
+## License
 
-  /// Open overLay content
-  ///
-  /// - Optional arguments:
-  ///
-  /// `height` the overlay height and default is [WindowSize.fullCover]
-  ///
-  /// `width` the overlay width and default is [WindowSize.matchParent]
-  ///
-  /// `alignment` the alignment postion on screen and default is [OverlayAlignment.center]
-  ///
-  /// `visibilitySecret` the detail displayed in notifications on the lock screen and default is [NotificationVisibility.visibilitySecret]
-  ///
-  /// `OverlayFlag` the overlay flag and default is [OverlayFlag.defaultFlag]
-  ///
-  /// `overlayTitle` the notification message and default is "overlay activated"
-  ///
-  /// `overlayContent` the notification message
-  ///
-  /// `enableDrag` to enable/disable dragging the overlay over the screen and default is "false"
-  ///
-  /// `positionGravity` the overlay postion after drag and default is [PositionGravity.none]
-  ///
-  /// `startPosition` the overlay start position and default is null
- await FlutterOverlayWindow.showOverlay();
-
- /// closes overlay if open
- await FlutterOverlayWindow.closeOverlay();
-
- /// broadcast data to and from overlay app
- await FlutterOverlayWindow.shareData("Hello from the other side");
-
- /// streams message shared between overlay and main app
-  FlutterOverlayWindow.overlayListener.listen((event) {
-      log("Current Event: $event");
-    });
-
- /// use [OverlayFlag.focusPointer] when you want to use fields that show keyboards
- await FlutterOverlayWindow.showOverlay(flag: OverlayFlag.focusPointer);
+This project is open-source and available for modification.
 
 
- /// update the overlay flag while the overlay in action
- await FlutterOverlayWindow.updateFlag(OverlayFlag.defaultFlag);
+## Backup providers (automatic fallback)
 
- /// Update the overlay size in the screen
- await FlutterOverlayWindow.resizeOverlay(80, 120);
-
- /// Update the overlay position in the screen
- ///
- /// `position` the new position of the overlay
- ///
- /// `return` true if the position updated successfully
- await FlutterOverlayWindow.moveOverlay(OverlayPosition(0, 156))
-
- /// Get the current overlay position
- ///
- /// `return` the current overlay position
- await FlutterOverlayWindow.getOverlayPosition()
-
-```
-
-```dart
-
-enum OverlayFlag {
-  /// Window flag: this window can never receive touch events.
-  /// Usefull if you want to display click-through overlay
-  clickThrough,
-
-  /// Window flag: this window won't ever get key input focus
-  /// so the user can not send key or other button events to it.
-  defaultFlag,
-
-  /// Window flag: allow any pointer events outside of the window to be sent to the windows behind it.
-  /// Usefull when you want to use fields that show keyboards.
-  focusPointer,
-}
-
-```
-
-```dart
-
-  /// Type of dragging behavior for the overlay.
-  enum PositionGravity {
-    /// The `PositionGravity.none` will allow the overlay to postioned anywhere on the screen.
-    none,
-
-    /// The `PositionGravity.right` will allow the overlay to stick on the right side of the screen.
-    right,
-
-    /// The `PositionGravity.left` will allow the overlay to stick on the left side of the screen.
-    left,
-
-    /// The `PositionGravity.auto` will allow the overlay to stick either on the left or right side of the screen depending on the overlay position.
-    auto,
-  }
+Settings → **Backup providers** lets you add extra OpenAI-compatible providers (base URL, key, model). If the main provider fails, requests move to the next one and keep cycling (two full rounds, at least 4 attempts). With only one provider, it is retried up to 4 times (with growing pauses) before the task ends. After switching to a backup it stays there for 10 minutes, then tries the main provider first again. Pressing Stop is never retried.
 
 
-```
+## Building the APK
+
+`.github/workflows/build-apk.yml` builds the release APK from a clean checkout (Java 17, stable Flutter, `flutter pub get`, `flutter build apk --release --target-platform android-arm64`) and uploads `app-release.apk` as an artifact. Without signing secrets it signs with the debug key; to sign with your own key, add the repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`.
+
+## People, settings and walkthroughs
+
+- **Aliases:** Agent preferences → *People & walkthroughs*. Give people nicknames ("mom", "boss"), an optional number and the app you use for them. The agent is told about them on every request, and call / SMS / WhatsApp actions resolve them directly. It also learns which app you usually use for a contact.
+- **Quick settings:** the `system_setting` action turns Wi-Fi, Bluetooth, airplane mode, mobile data, location, NFC, Do Not Disturb, battery saver and auto-rotate on/off directly when Shizuku is available; otherwise it opens the exact Settings page/panel and lets the screen automation finish the toggle. It can also open display, sound, battery, accessibility, apps and other settings pages.
+- **Opening apps:** `open_app` launches directly from wherever you are and checks the app really came to the front. Only if Android blocked the launch does it try Shizuku, and then the launcher icon as a last resort.
+- **Walkthroughs:** after a phone task succeeds, a short step-by-step walkthrough (no typed text stored) is saved, listed in *People & walkthroughs*, and given to the agent as a guide for similar tasks.

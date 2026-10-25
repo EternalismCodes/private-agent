@@ -51,6 +51,16 @@ class AppLauncherService {
     }
   }
 
+  /// Package name the fuzzy [openApp] would launch for [appName].
+  Future<String?> findPackage(String appName) async {
+    final matches = await searchApps(appName);
+    if (matches.isEmpty) return null;
+    for (final app in matches) {
+      if (app.name.toLowerCase() == appName.toLowerCase()) return app.packageName;
+    }
+    return matches.first.packageName;
+  }
+
   /// Open an app by exact package name
   Future<String> openPackage(String packageName) async {
     try {

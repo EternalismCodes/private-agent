@@ -167,11 +167,12 @@ class NeuralTts {
       final samples = (reply['samples'] as TransferableTypedData).materialize().asFloat32List();
       final rate = reply['sr'] as int;
       if (samples.isEmpty || rate <= 0) return false;
-      final wav = File('$dir/utterance_${ticket % 2}.wav');
+      final wav = File('$dir/utterance_$ticket.wav');
       await wav.writeAsBytes(_toWav(samples, rate), flush: true);
       if (ticket != _ticket) return true;
       started = true;
       await _play(wav.path, Duration(milliseconds: samples.length * 1000 ~/ rate), ticket);
+      _cleanOld(dir, ticket);
       return true;
     } catch (_) {
       try {
@@ -181,6 +182,19 @@ class NeuralTts {
       // system voice (that would be two voices at once).
       return started;
     }
+  }
+
+  // Every utterance gets its own file name: the audio player remembers the last
+  // file it was given and can replay stale audio when the name repeats.
+  void _cleanOld(String dir, int keepTicket) {
+    try {
+      for (final f in Directory(dir).listSync()) {
+        final n = f.path.split('/').last;
+        if (n.startsWith('utterance_') && n != 'utterance_$keepTicket.wav') {
+          f.deleteSync();
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _play(String path, Duration length, int ticket) async {

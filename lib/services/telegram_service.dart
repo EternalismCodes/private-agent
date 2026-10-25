@@ -33,6 +33,8 @@ class TelegramService {
   bool _isPolling = false;
   Timer? _pollingTimer;
   String _activeChatId = '';
+  DateTime _lastProgressAt = DateTime.fromMillisecondsSinceEpoch(0);
+  String _lastProgress = '';
 
   /// Last few status lines, for a simple diagnostics view in Settings.
   final List<String> log = [];
@@ -192,7 +194,14 @@ class TelegramService {
         // Telegram runs unattended, so confirmStep is never actually invoked.
         confirmStep: (step) async => true,
         onProgress: (msg) {
-          if (chatId == _activeChatId) unawaited(_sendMessage(chatId, '⏳ $msg'));
+          // Long jobs report every step; sending them all floods the chat and
+          // trips Telegram's rate limit, so keep it to one update every few seconds.
+          final now = DateTime.now();
+          if (chatId != _activeChatId || msg == _lastProgress) return;
+          if (now.difference(_lastProgressAt) < const Duration(seconds: 5)) return;
+          _lastProgress = msg;
+          _lastProgressAt = now;
+          unawaited(_sendMessage(chatId, '⏳ $msg'));
         },
       );
 

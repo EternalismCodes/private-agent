@@ -16,6 +16,7 @@ const Set<String> kPlannableActions = {
   'play_favorite_netflix',
   'take_photo',
   'take_selfie',
+  'system_setting',
   'analyze_photo',
   'get_weather',
   'send_whatsapp',

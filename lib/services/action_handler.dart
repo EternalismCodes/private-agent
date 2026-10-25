@@ -1,3 +1,4 @@
+import 'dart:async';
 import '../agent/safe_cast.dart';
 import '../models/agent_action.dart';
 import '../models/chat_message.dart';
@@ -20,6 +21,8 @@ import 'ir_service.dart';
 import 'favorites_service.dart';
 import 'camera_service.dart';
 import 'location_service.dart';
+import 'quick_settings_service.dart';
+import '../agent/people_book.dart';
 
 class ActionHandler {
   final AppLauncherService _appLauncher = AppLauncherService();
@@ -29,6 +32,7 @@ class ActionHandler {
   final SystemControlService _systemControl = SystemControlService();
   final ShizukuService _shizuku = ShizukuService();
   final ScreenAutomationService _screenAutomation = ScreenAutomationService();
+  late final QuickSettingsService _quickSettings = QuickSettingsService(_shizuku);
   final WeatherService _weather = WeatherService();
   final YoutubeService _youtube = YoutubeService();
   final NetflixService _netflix = NetflixService();
@@ -63,7 +67,7 @@ class ActionHandler {
     return s.isEmpty ? null : s;
   }
 
-  static const Set<String> _strict = {'set_alarm', 'set_timer', 'get_weather', 'play_youtube', 'play_favorite', 'play_netflix', 'play_favorite_netflix', 'analyze_screen', 'analyze_photo', 'run_taught', 'send_ir', 'save_ir', 'send_whatsapp', 'take_photo', 'take_selfie'};
+  static const Set<String> _strict = {'set_alarm', 'set_timer', 'get_weather', 'play_youtube', 'play_favorite', 'play_netflix', 'play_favorite_netflix', 'analyze_screen', 'analyze_photo', 'run_taught', 'send_ir', 'save_ir', 'send_whatsapp', 'take_photo', 'take_selfie', 'system_setting'};
   static final RegExp _failed = RegExp(r'^(error|could not|cannot|unable)', caseSensitive: false);
 
   /// Execute an action and return the result
@@ -86,18 +90,59 @@ class ActionHandler {
           break;
 
         case 'make_call':
+          await PeopleBook.instance.load();
+          final callWho = _sn(p['contact_name']);
+          final callPerson = PeopleBook.instance.resolve(callWho ?? _sn(p['phone_number']));
           result = await _communication.makeCall(
-            contactName: _sn(p['contact_name']),
-            phoneNumber: _sn(p['phone_number']),
+            contactName: callPerson != null && callPerson.phone.isEmpty && callPerson.contact.isNotEmpty ? callPerson.contact : callWho,
+            phoneNumber: _sn(p['phone_number']) ?? (callPerson != null && callPerson.phone.isNotEmpty ? callPerson.phone : null),
           );
+          if (!_failed.hasMatch(result.trim())) {
+            unawaited(PeopleBook.instance.noteUse(callPerson?.contact.isNotEmpty == true ? callPerson!.contact : (callWho ?? ''), 'Phone call'));
+          }
           break;
 
         case 'send_sms':
+          await PeopleBook.instance.load();
+          final smsWho = _sn(p['contact_name']);
+          final smsPerson = PeopleBook.instance.resolve(smsWho ?? _sn(p['phone_number']));
           result = await _communication.sendSms(
-            contactName: _sn(p['contact_name']),
-            phoneNumber: _sn(p['phone_number']),
+            contactName: smsPerson != null && smsPerson.phone.isEmpty && smsPerson.contact.isNotEmpty ? smsPerson.contact : smsWho,
+            phoneNumber: _sn(p['phone_number']) ?? (smsPerson != null && smsPerson.phone.isNotEmpty ? smsPerson.phone : null),
             message: _s(p['message']),
           );
+          if (!_failed.hasMatch(result.trim())) {
+            unawaited(PeopleBook.instance.noteUse(smsPerson?.contact.isNotEmpty == true ? smsPerson!.contact : (smsWho ?? ''), 'SMS'));
+          }
+          break;
+
+        case 'system_setting':
+          final settingName = _s(p['setting'] ?? p['name']);
+          var settingState = _s(p['state'] ?? p['value'], 'open').toLowerCase();
+          if (const ['true', 'enable', 'enabled', 'turn on', 'on'].contains(settingState)) settingState = 'on';
+          if (const ['false', 'disable', 'disabled', 'turn off', 'off'].contains(settingState)) settingState = 'off';
+          if (settingState != 'on' && settingState != 'off') settingState = 'open';
+          final applied = await _quickSettings.apply(settingName, settingState);
+          if (applied == null) {
+            result = 'Could not find a setting called "$settingName".';
+            break;
+          }
+          result = applied.message;
+          if (!applied.done && aiService != null) {
+            // No direct control: the right page is open, so let the on-screen
+            // automation flip the switch.
+            _currentExecutor = TaskExecutor(
+              aiService: aiService,
+              screenService: _screenAutomation,
+              appLauncher: _appLauncher,
+              shizukuService: _shizuku,
+              onProgress: onProgress,
+            );
+            result = await _currentExecutor!.executeTask(
+              'The ${applied.label} settings screen is already open. Turn ${applied.label} $settingState. If it is already $settingState, change nothing and finish.',
+            );
+            _currentExecutor = null;
+          }
           break;
 
         case 'search_contact':
@@ -188,7 +233,10 @@ class ActionHandler {
           break;
 
         case 'send_whatsapp':
-          final waContact = _s(p['contact'] ?? p['to'] ?? p['phone']);
+          await PeopleBook.instance.load();
+          var waContact = _s(p['contact'] ?? p['to'] ?? p['phone']);
+          final waPerson = PeopleBook.instance.resolve(waContact);
+          if (waPerson != null) waContact = waPerson.phone.isNotEmpty ? waPerson.phone : (waPerson.contact.isNotEmpty ? waPerson.contact : waContact);
           final waMessage = _s(p['message']);
           result = await _whatsapp.send(waContact, waMessage, contacts: _contacts, screen: _screenAutomation);
           if (result.startsWith(kWhatsappFallbackPrefix)) {
@@ -208,6 +256,9 @@ class ActionHandler {
               'Open WhatsApp, open the chat with "$waContact" (search for them if needed), and send this exact message: $waMessage',
             );
             _currentExecutor = null;
+          }
+          if (!_failed.hasMatch(result.trim())) {
+            unawaited(PeopleBook.instance.noteUse(waPerson?.contact.isNotEmpty == true ? waPerson!.contact : waContact, 'WhatsApp'));
           }
           break;
 

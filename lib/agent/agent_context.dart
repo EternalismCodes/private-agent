@@ -4,6 +4,7 @@ import '../services/ai_service.dart';
 import '../services/location_service.dart';
 import 'llm_client.dart';
 import 'memory_service.dart';
+import 'people_book.dart';
 import 'prefs.dart';
 import 'skills_service.dart';
 import 'vault_service.dart';
@@ -49,6 +50,11 @@ class AgentContext {
     if (locationLine.isNotEmpty) b.writeln(locationLine);
     if (prefs.userName.isNotEmpty) {
       b.writeln('The user\'s name is ${prefs.userName}.');
+    }
+    await PeopleBook.instance.load();
+    final people = PeopleBook.instance.promptSection();
+    if (people.isNotEmpty) {
+      b.writeln('\n$people');
     }
     final mem = await memory.promptContext();
     if (mem.isNotEmpty) {

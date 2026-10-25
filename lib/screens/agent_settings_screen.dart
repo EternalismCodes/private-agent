@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import '../services/neural_tts.dart';
+import 'people_screen.dart';
 import '../services/tts_voices.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import '../agent/agent_mode.dart';
@@ -319,6 +320,14 @@ class _AgentSettingsScreenState extends State<AgentSettingsScreen> {
             'Save durable facts about you (preferences, routines, people) to memory.md automatically.',
             _prefs.autoLearnMemory,
             (v) => _prefs.autoLearnMemory = v,
+          ),
+          const SectionLabel('People & walkthroughs'),
+          ListTile(
+            leading: const Icon(Icons.people_alt_rounded),
+            title: const Text('Aliases, contact apps & walkthroughs', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+            subtitle: const Text('Nicknames for people, the app you use for each, and step-by-step walkthroughs of tasks that worked.', style: TextStyle(fontSize: 12.5)),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PeopleScreen())),
           ),
           const SectionLabel('Voice'),
           _switch(

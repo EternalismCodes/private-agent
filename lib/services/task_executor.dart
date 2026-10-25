@@ -13,6 +13,7 @@ import 'skill_memory_service.dart';
 import 'recovery_engine.dart';
 import '../models/saved_skill.dart';
 import '../agent/workflow.dart';
+import '../agent/walkthrough_book.dart';
 
 /// How the last [TaskExecutor.executeTask] call ended.
 enum TaskOutcome { none, success, failed, cancelled, notReady }
@@ -113,7 +114,7 @@ Available actions:
 - swipe: {"startX": 540, "startY": 2000, "endX": 540, "endY": 500} - Swipe from start to end coordinates (e.g. open app drawer, navigate carousels)
 - press_back: {} - Press the back button
 - press_home: {} - Press the home button
-- open_app: {"app_name": "WhatsApp"} - Open an app
+- open_app: {"app_name": "WhatsApp"} - Open any installed app directly, from whatever screen you are on
 - wait: {} - Wait a moment for content to load
 - done: {} - Task is complete
 
@@ -128,6 +129,7 @@ Rules:
 - Never scroll or swipe more than three times in a row. After three scrolls, choose the best visible result or take a different action instead of continuing to browse indefinitely.
 - If you need to find something by scrolling, scroll and then check the screen again.
 - If you need to open an app (like Wikipedia, Spotify, etc.) and you cannot find it after a couple of scrolls, ASSUME it is not installed. Immediately open Chrome or Google to search for the info on the web instead.
+- To open or switch to an app ALWAYS use open_app straight away, even in the middle of a task. Never press_home first just to look for an icon.
 - Keep reasoning very brief (1 sentence)
 
 MULTI-PART TASKS:
@@ -141,7 +143,7 @@ MULTI-PART TASKS:
     final base = extraContext.trim().isEmpty
         ? _taskSystemPrompt
         : '$_taskSystemPrompt\n$extraContext';
-    return base;
+    return '$base${WalkthroughBook.instance.promptFor(_goal)}';
   }
 
   /// Extract JSON safely even if wrapped in markdown or conversational text
@@ -173,6 +175,7 @@ MULTI-PART TASKS:
     tokensUsed = 0;
     usedReplay = false;
     _goal = userGoal;
+    await WalkthroughBook.instance.load();
 
     await ScreenAutomationService.logToNative(
       "[TaskExecutor] Checking if accessibility service is running...",
@@ -265,7 +268,7 @@ MULTI-PART TASKS:
         bool success = false;
         if (step.action == 'open_app') {
           final appName = step.params['app_name'] as String? ?? '';
-          final res = await _appLauncher.openApp(appName);
+          final res = await _openAppVerified(appName);
           success = res.startsWith('Opened');
           await Future.delayed(const Duration(milliseconds: 3000));
         } else if (step.action == 'click_text') {
@@ -369,7 +372,7 @@ MULTI-PART TASKS:
       String failureHint = '';
       if (consecutiveFailures >= 3) {
         failureHint =
-            '\n\nWARNING: You have failed $consecutiveFailures times in a row with the same approach. You MUST try a completely different action. If open_app failed, try press_home and look for the app icon on the home screen instead. If click_text failed, use click_at with coordinates. Do NOT repeat the same failed action.';
+            '\n\nWARNING: You have failed $consecutiveFailures times in a row with the same approach. You MUST try a completely different action. If open_app failed, check the exact app name and try open_app once more; only as a last resort press_home and look for the app icon. If click_text failed, use click_at with coordinates. Do NOT repeat the same failed action.';
       }
 
       // 2. Build the prompt (system prompt is sent separately via sendTaskMessage)
@@ -680,7 +683,7 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
 
         case 'open_app':
           final appName = params['app_name'] as String? ?? '';
-          actionResult = await _appLauncher.openApp(appName);
+          actionResult = await _openAppVerified(appName);
           success = actionResult.startsWith('Opened');
           break;
 
@@ -1032,6 +1035,46 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
 
   /// Stores the executed steps (with their exact targets and screen
   /// signatures) so the same task can be replayed without any model call.
+  /// Opens an app and makes sure it really came to the front.
+  ///
+  /// Android silently blocks launches from a backgrounded app, which used to
+  /// look like success. Order: direct launch from wherever we are (no detour
+  /// via the home screen) → Shizuku launch if available → only then the
+  /// launcher icon as a last resort.
+  Future<String> _openAppVerified(String appName) async {
+    final pkg = await _appLauncher.findPackage(appName);
+    final before = await _screenService.getCurrentPackage() ?? '';
+    final res = await _appLauncher.openApp(appName);
+    if (!res.startsWith('Opened') || pkg == null) return res;
+    if (before == pkg) return res; // already in front
+    if (await _waitForApp(pkg, before, 2600)) return res;
+
+    try {
+      if (_shizukuService.isAvailable || await _shizukuService.checkAvailability()) {
+        await _shizukuService.runCommand('monkey -p $pkg -c android.intent.category.LAUNCHER 1');
+        if (await _waitForApp(pkg, before, 3000)) return res;
+      }
+    } catch (_) {}
+
+    _report('Opening $appName from the launcher…');
+    await _screenService.pressHome();
+    await Future.delayed(const Duration(milliseconds: 900));
+    if (await _screenService.clickByText(appName) && await _waitForApp(pkg, before, 4500)) return res;
+    return 'Could not open $appName: Android blocked the launch from the background. Keep PrivateAgent open, or allow "Display over other apps" for it.';
+  }
+
+  Future<bool> _waitForApp(String pkg, String before, int maxMs) async {
+    var waited = 0;
+    while (waited < maxMs) {
+      await Future.delayed(const Duration(milliseconds: 250));
+      waited += 250;
+      final now = await _screenService.getCurrentPackage() ?? '';
+      if (now == pkg) return true;
+      if (now.isNotEmpty && now != before && !now.contains('systemui') && !now.toLowerCase().contains('launcher')) return true;
+    }
+    return false;
+  }
+
   Future<void> _learnWorkflow(
     String goal,
     List<ActionStep> steps, {
@@ -1039,6 +1082,8 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
   }) async {
     try {
       if (steps.isEmpty) return;
+      // A simple, readable walkthrough of this successful task.
+      unawaited(WalkthroughBook.instance.recordFrom(goal, List<ActionStep>.from(steps)));
       if (settle) await Future.delayed(const Duration(milliseconds: 600));
       final end = await _snapshot();
       await _skillMemory.saveSkill(
@@ -1268,7 +1313,7 @@ Step ${step + 1}/${_aiService.maxSteps}. Look at the text dump and coordinates. 
           break;
         case 'open_app':
           final appName = step.params['app_name'] as String? ?? '';
-          actionResult = await _appLauncher.openApp(appName);
+          actionResult = await _openAppVerified(appName);
           success = actionResult.startsWith('Opened');
           break;
         case 'wait':
