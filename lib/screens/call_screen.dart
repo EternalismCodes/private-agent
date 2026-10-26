@@ -179,13 +179,18 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
   }
 
   Future<void> _drainSpeech() async {
-    while (_speechQueue.isNotEmpty && _active) {
-      final sentence = _speechQueue.removeAt(0);
-      _setPhase(CallPhase.speaking);
-      if (mounted) setState(() => _said = sentence);
-      await widget.voice.speakAndWait(JsonUtils.forSpeech(sentence, maxChars: 300), rate: _speechRate);
+    while (_active) {
+      while (_speechQueue.isNotEmpty && _active) {
+        final sentence = _speechQueue.removeAt(0);
+        _setPhase(CallPhase.speaking);
+        if (mounted) setState(() => _said = sentence);
+        await widget.voice.speakAndWait(JsonUtils.forSpeech(sentence, maxChars: 300), rate: _speechRate);
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 250)); // let the echo die down
+      // A sentence that arrived during that pause must still be spoken before
+      // listening resumes — otherwise it would be dropped or talk over the user.
+      if (_speechQueue.isEmpty) break;
     }
-    await Future<void>.delayed(const Duration(milliseconds: 250)); // let the echo die down
     _speaking = null;
   }
 
@@ -249,7 +254,9 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
         final heard = await widget.voice.listenOnce(
           maxSpeech: const Duration(seconds: 30),
           endSilence: const Duration(milliseconds: 1400),
-          noSpeechTimeout: const Duration(seconds: 10),
+          // The recogniser is restarted silently underneath, so this is one
+          // continuous listening session rather than a restart every few seconds.
+          noSpeechTimeout: const Duration(seconds: 60),
         );
         if (!_active) break;
 

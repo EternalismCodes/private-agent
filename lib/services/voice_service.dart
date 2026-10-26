@@ -103,24 +103,9 @@ class VoiceService {
       completer.complete(text.isEmpty ? null : text);
     }
 
-    // Ignore status events fired while the recogniser is still starting.
-    _engineStopped = () {
-      if (DateTime.now().difference(started).inMilliseconds > 500) finish();
-    };
+    var restarting = false;
 
-    final ticker = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      if (completer.isCompleted) return;
-      final now = DateTime.now();
-      if (heardSpeech && now.difference(lastActivity) >= endSilence) {
-        finish();
-      } else if (!heardSpeech && now.difference(started) >= noSpeechTimeout) {
-        finish();
-      } else if (now.difference(started) >= maxSpeech) {
-        finish();
-      }
-    });
-
-    try {
+    Future<void> begin() async {
       await _muteBeep();
       await _speech.listen(
         onResult: (SpeechRecognitionResult result) {
@@ -142,6 +127,45 @@ class VoiceService {
           partialResults: true,
         ),
       );
+    }
+
+    // Android's recogniser ends itself after a few quiet seconds. If nothing
+    // was said yet, quietly start it again instead of returning, so a call
+    // is one continuous listening session (the start beep is muted).
+    _engineStopped = () {
+      if (completer.isCompleted) return;
+      if (DateTime.now().difference(started).inMilliseconds <= 500) return; // still starting
+      if (heardSpeech || DateTime.now().difference(started) >= noSpeechTimeout) {
+        finish();
+        return;
+      }
+      if (restarting) return;
+      restarting = true;
+      Future<void>.delayed(const Duration(milliseconds: 120), () async {
+        try {
+          if (!completer.isCompleted) await begin();
+        } catch (_) {
+          finish();
+        } finally {
+          restarting = false;
+        }
+      });
+    };
+
+    final ticker = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (completer.isCompleted) return;
+      final now = DateTime.now();
+      if (heardSpeech && now.difference(lastActivity) >= endSilence) {
+        finish();
+      } else if (!heardSpeech && now.difference(started) >= noSpeechTimeout) {
+        finish();
+      } else if (now.difference(started) >= maxSpeech && heardSpeech) {
+        finish();
+      }
+    });
+
+    try {
+      await begin();
     } catch (_) {
       finish();
     }
@@ -224,6 +248,11 @@ class VoiceService {
     final clean = text.trim();
     if (clean.isEmpty) return Future<void>.value();
     final gen = _speechGen;
+    // Start generating this sentence's audio now, while earlier ones are
+    // still playing, so there is no silent gap between sentences.
+    if (AgentPrefs.instance.ttsEngine == 'neural') {
+      unawaited(NeuralTts.instance.prefetch(clean, speed: _speedFor(rate)));
+    }
     return _enqueue(() async {
       if (gen != _speechGen) return; // stopped or replaced while waiting
       await _utter(clean, rate: rate);
@@ -231,10 +260,11 @@ class VoiceService {
   }
 
   /// Built-in natural voice; false means "use the system voice instead".
+  double _speedFor(double? rate) => rate == null ? 1.0 : (rate / 0.5).clamp(0.7, 1.5).toDouble();
+
   Future<bool> _speakNeural(String text, {double? rate}) async {
     if (AgentPrefs.instance.ttsEngine != 'neural') return false;
-    final speed = rate == null ? 1.0 : (rate / 0.5).clamp(0.7, 1.5).toDouble();
-    return NeuralTts.instance.speak(text, speed: speed);
+    return NeuralTts.instance.speak(text, speed: _speedFor(rate));
   }
 
   /// Stop listening

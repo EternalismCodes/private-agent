@@ -132,21 +132,32 @@ class NeuralTts {
     }
   }
 
-  /// Speaks [text]; resolves true if it was spoken (or superseded by newer
-  /// speech) and false if the caller should fall back to the system voice.
-  Future<bool> speak(String text, {double speed = 1.0}) async {
+  final Map<String, Future<_Synth?>> _cache = {};
+  int _inFlight = 0;
+
+  static String _key(String text, double speed) => '${speed.toStringAsFixed(2)}|$text';
+
+  /// Starts generating the audio for [text] in the background so a later
+  /// [speak] of the same text starts instantly.
+  Future<void> prefetch(String text, {double speed = 1.0}) async {
     final clean = text.trim();
-    if (clean.isEmpty) return true;
+    if (clean.isEmpty) return;
     await checkGuard();
-    if (_disabled) return false;
-    final ticket = ++_ticket;
-    var started = false;
+    if (_disabled) return;
+    final key = _key(clean, speed.clamp(0.6, 1.6).toDouble());
+    _cache.putIfAbsent(key, () => _synthesize(clean, speed));
+    while (_cache.length > 6) {
+      _cache.remove(_cache.keys.first);
+    }
+  }
+
+  Future<_Synth?> _synthesize(String clean, double speed) async {
     SharedPreferences? prefs;
     try {
       prefs = await SharedPreferences.getInstance();
       // If the app dies inside native code, this stays set and the next
       // launch counts a strike (see [checkGuard]).
-      await prefs.setBool(_kGuard, true);
+      if (_inFlight++ == 0) await prefs.setBool(_kGuard, true);
       final dir = await _ensureFiles();
       await _startWorker();
       final id = _nextId++;
@@ -160,24 +171,46 @@ class NeuralTts {
         'speed': speed.clamp(0.6, 1.6),
       });
       final reply = await done.future.timeout(const Duration(seconds: 60));
-      await prefs.setBool(_kGuard, false);
-      if (reply['error'] != null) return false;
+      if (reply['error'] != null) return null;
       await prefs.setInt(_kStrikes, 0);
-      if (ticket != _ticket) return true; // newer speech replaced this one
       final samples = (reply['samples'] as TransferableTypedData).materialize().asFloat32List();
       final rate = reply['sr'] as int;
-      if (samples.isEmpty || rate <= 0) return false;
-      final wav = File('$dir/utterance_$ticket.wav');
-      await wav.writeAsBytes(_toWav(samples, rate), flush: true);
+      if (samples.isEmpty || rate <= 0) return null;
+      return _Synth(samples, rate, dir);
+    } catch (_) {
+      return null;
+    } finally {
+      if (--_inFlight == 0) {
+        try {
+          await prefs?.setBool(_kGuard, false);
+        } catch (_) {}
+      }
+    }
+  }
+
+  /// Speaks [text] and resolves only when playback has really finished: true
+  /// if it was spoken (or superseded by newer speech), false if the caller
+  /// should fall back to the system voice.
+  Future<bool> speak(String text, {double speed = 1.0}) async {
+    final clean = text.trim();
+    if (clean.isEmpty) return true;
+    await checkGuard();
+    if (_disabled) return false;
+    final ticket = ++_ticket;
+    var started = false;
+    try {
+      final key = _key(clean, speed.clamp(0.6, 1.6).toDouble());
+      final synth = await (_cache.remove(key) ?? _synthesize(clean, speed));
+      if (synth == null) return false;
+      if (ticket != _ticket) return true; // newer speech replaced this one
+      final wav = File('${synth.dir}/utterance_$ticket.wav');
+      await wav.writeAsBytes(_toWav(synth.samples, synth.rate), flush: true);
       if (ticket != _ticket) return true;
       started = true;
-      await _play(wav.path, Duration(milliseconds: samples.length * 1000 ~/ rate), ticket);
-      _cleanOld(dir, ticket);
+      await _play(wav.path, Duration(milliseconds: synth.samples.length * 1000 ~/ synth.rate), ticket);
+      _cleanOld(synth.dir, ticket);
       return true;
     } catch (_) {
-      try {
-        await prefs?.setBool(_kGuard, false);
-      } catch (_) {}
       // If audio already began, don't let the caller also speak with the
       // system voice (that would be two voices at once).
       return started;
@@ -201,9 +234,17 @@ class NeuralTts {
     final player = _player ??= AudioPlayer();
     await player.stop();
     final finished = player.onPlayerComplete.first;
+    final began = DateTime.now();
     await player.play(DeviceFileSource(path));
     if (ticket != _ticket) return;
     await finished.timeout(length + const Duration(seconds: 3), onTimeout: () {});
+    // Some devices report "complete" early; never return before the audio
+    // has had its full length, so callers know exactly how long speech lasts.
+    if (ticket != _ticket) return;
+    final remaining = length - DateTime.now().difference(began);
+    if (remaining > const Duration(milliseconds: 300)) {
+      await Future<void>.delayed(remaining - const Duration(milliseconds: 150));
+    }
   }
 
   Future<void> stop() async {
@@ -241,6 +282,13 @@ class NeuralTts {
     }
     return b.buffer.asUint8List();
   }
+}
+
+class _Synth {
+  final Float32List samples;
+  final int rate;
+  final String dir;
+  const _Synth(this.samples, this.rate, this.dir);
 }
 
 /// Runs in its own isolate: owns the sherpa-onnx engines and does the heavy
