@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import '../services/neural_tts.dart';
+import 'call_audio_test_screen.dart';
 import 'people_screen.dart';
 import '../services/tts_voices.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
@@ -328,6 +329,13 @@ class _AgentSettingsScreenState extends State<AgentSettingsScreen> {
             subtitle: const Text('Nicknames for people, the app you use for each, and step-by-step walkthroughs of tasks that worked.', style: TextStyle(fontSize: 12.5)),
             trailing: const Icon(Icons.chevron_right_rounded),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PeopleScreen())),
+          ),
+          ListTile(
+            leading: const Icon(Icons.graphic_eq_rounded),
+            title: const Text('Call audio test', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+            subtitle: const Text('Checks whether this device lets the agent hear a WhatsApp or Telegram call.', style: TextStyle(fontSize: 12.5)),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CallAudioTestScreen())),
           ),
           const SectionLabel('Voice'),
           _switch(
