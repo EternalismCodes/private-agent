@@ -48,6 +48,9 @@ class _CallAudioTestScreenState extends State<CallAudioTestScreen> {
   String _shizukuNote = '';
   bool _accessibilityOn = false;
   bool _done = false;
+  bool _cableRunning = false;
+  final List<String> _cableLines = [];
+  String _cableVerdict = '';
 
   Future<void> _run() async {
     if (_running) return;
@@ -134,6 +137,79 @@ class _CallAudioTestScreenState extends State<CallAudioTestScreen> {
     });
   }
 
+  /// Can a Shizuku-launched helper act as a "virtual audio cable" (play the
+  /// agent's voice straight into the call app's microphone)? That needs system
+  /// audio-routing permissions the shell user may or may not hold. This only
+  /// checks; it changes nothing.
+  Future<void> _checkCable() async {
+    if (_cableRunning) return;
+    setState(() {
+      _cableRunning = true;
+      _cableLines.clear();
+      _cableVerdict = '';
+    });
+    try {
+      final up = await _shizukuReady();
+      if (!up) {
+        _cableVerdict = 'Shizuku is not running or has not been allowed for PrivateAgent.';
+        return;
+      }
+      final sdk = (await _shizuku.runCommand('getprop ro.build.version.sdk')).trim();
+      final hyper = (await _shizuku.runCommand('getprop ro.mi.os.version.name')).trim();
+      final osv = (await _shizuku.runCommand('getprop ro.mi.os.version.incremental')).trim();
+      _cableLines.add('Android SDK $sdk${hyper.isNotEmpty ? ', $hyper $osv' : ''}');
+
+      final pkg = await _shizuku.runCommand('dumpsys package com.android.shell');
+      const wanted = [
+        'MODIFY_AUDIO_ROUTING',
+        'CAPTURE_AUDIO_OUTPUT',
+        'CAPTURE_VOICE_COMMUNICATION_OUTPUT',
+        'CAPTURE_MEDIA_OUTPUT',
+        'MODIFY_AUDIO_SETTINGS',
+      ];
+      final held = <String, bool>{};
+      for (final name in wanted) {
+        final line = pkg.split('\n').firstWhere(
+              (l) => l.contains('permission.$name') && l.contains('granted='),
+              orElse: () => '',
+            );
+        final granted = line.contains('granted=true');
+        held[name] = granted;
+        _cableLines.add('$name: ${line.isEmpty ? 'not held by the shell user' : (granted ? 'granted' : 'declared but NOT granted')}');
+      }
+
+      final policy = await _shizuku.runCommand('dumpsys media.audio_policy');
+      final submix = policy.split('\n').where((l) => l.toLowerCase().contains('submix')).map((l) => l.trim()).take(8).toList();
+      _cableLines.add(submix.isEmpty ? 'Remote submix device: not mentioned in the audio policy' : 'Remote submix device: present');
+      _cableLines.addAll(submix);
+
+      final routing = held['MODIFY_AUDIO_ROUTING'] == true;
+      final capture = held['CAPTURE_AUDIO_OUTPUT'] == true;
+      if (routing && capture && submix.isNotEmpty) {
+        _cableVerdict =
+            'Possible. The shell user holds the audio-routing permissions a virtual cable needs and the loopback device exists. A helper is worth trying, but it is untested and HyperOS may still block it.';
+      } else {
+        final missing = [
+          if (!routing) 'MODIFY_AUDIO_ROUTING',
+          if (!capture) 'CAPTURE_AUDIO_OUTPUT',
+          if (submix.isEmpty) 'the remote-submix loopback device',
+        ];
+        _cableVerdict = 'Blocked on this device: missing ${missing.join(', ')}. A Shizuku virtual cable is not possible here.';
+      }
+    } catch (e) {
+      _cableVerdict = 'The check failed: $e';
+    } finally {
+      if (mounted) setState(() => _cableRunning = false);
+    }
+  }
+
+  Future<bool> _shizukuReady() async {
+    final up = await _shizuku.checkAvailability();
+    if (!up) return false;
+    if (!_shizuku.hasPermission) return _shizuku.requestPermission();
+    return true;
+  }
+
   Future<void> _collectShizuku() async {
     try {
       final out = await _shizuku.runCommand('dumpsys audio');
@@ -189,6 +265,12 @@ class _CallAudioTestScreenState extends State<CallAudioTestScreen> {
     for (final l in _shizukuLines) {
       b.writeln(l);
     }
+    if (_cableLines.isNotEmpty || _cableVerdict.isNotEmpty) {
+      b.writeln('\nVirtual cable check: $_cableVerdict');
+      for (final l in _cableLines) {
+        b.writeln(l);
+      }
+    }
     return b.toString();
   }
 
@@ -223,6 +305,42 @@ class _CallAudioTestScreenState extends State<CallAudioTestScreen> {
             '3. Ask the other person to keep talking for about a minute.\n'
             '4. Open PrivateAgent and tap Start. It sends you back to the call; keep the phone still and come back here after the notification says Done.',
             style: TextStyle(fontSize: 13, height: 1.5),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Virtual cable check (Shizuku)', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Checks whether this device lets Shizuku play the agent\'s voice straight into a call app\'s microphone. No call needed; nothing is changed.',
+                    style: TextStyle(fontSize: 12.5, height: 1.4),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: _cableRunning ? null : _checkCable,
+                    icon: const Icon(Icons.cable_rounded),
+                    label: Text(_cableRunning ? 'Checking…' : 'Run check'),
+                  ),
+                  if (_cableVerdict.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 10), child: Text(_cableVerdict, style: const TextStyle(height: 1.4))),
+                  for (final l in _cableLines) Padding(padding: const EdgeInsets.only(top: 3), child: Text(l, style: const TextStyle(fontSize: 12))),
+                  if (_cableLines.isNotEmpty)
+                    TextButton.icon(
+                      onPressed: () async {
+                        await Clipboard.setData(ClipboardData(text: _report()));
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Report copied — paste it to me.')));
+                        }
+                      },
+                      icon: const Icon(Icons.copy_rounded, size: 18),
+                      label: const Text('Copy report'),
+                    ),
+                ],
+              ),
+            ),
           ),
           const SizedBox(height: 16),
           FilledButton.icon(

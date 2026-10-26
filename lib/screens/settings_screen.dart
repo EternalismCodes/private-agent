@@ -8,6 +8,7 @@ import '../services/shizuku_service.dart';
 import '../services/screen_automation_service.dart';
 import '../services/telegram_service.dart';
 import 'task_history_screen.dart';
+import 'call_talk_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import '../config/feature_flags.dart';
@@ -454,6 +455,16 @@ class _SettingsScreenState extends State<SettingsScreen>
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
         children: [
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.record_voice_over_rounded),
+              title: const Text('Talk on my call', style: TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: const Text('Let the agent speak as you on a WhatsApp or Telegram call.'),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => CallTalkScreen(aiService: widget.aiService))),
+            ),
+          ),
+          const SizedBox(height: 12),
           // 1. Appearance Card
           _buildSettingsCard(
             icon: Icons.palette_outlined,

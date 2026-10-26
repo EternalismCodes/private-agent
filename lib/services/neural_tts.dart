@@ -45,6 +45,11 @@ class NeuralTts {
   ];
 
   bool _disabled = false;
+
+  /// While talking on someone else's call: play without taking audio focus,
+  /// so the call app doesn't pause or mute itself when the agent speaks.
+  bool callMode = false;
+  bool _ctxCall = false;
   bool _guardChecked = false;
   String? _dir;
   Isolate? _isolate;
@@ -233,6 +238,22 @@ class NeuralTts {
   Future<void> _play(String path, Duration length, int ticket) async {
     final player = _player ??= AudioPlayer();
     await player.stop();
+    if (callMode != _ctxCall) {
+      _ctxCall = callMode;
+      try {
+        await player.setAudioContext(
+          callMode
+              ? AudioContext(
+                  android: const AudioContextAndroid(
+                    contentType: AndroidContentType.speech,
+                    usageType: AndroidUsageType.media,
+                    audioFocus: AndroidAudioFocus.none,
+                  ),
+                )
+              : AudioContextConfig().build(),
+        );
+      } catch (_) {}
+    }
     final finished = player.onPlayerComplete.first;
     final began = DateTime.now();
     await player.play(DeviceFileSource(path));
